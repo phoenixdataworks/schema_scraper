@@ -1,0 +1,15 @@
+# Core dependency
+click>=8.0.0
+
+# Optional database drivers (install as needed)
+# pip install schema-scraper[mssql]
+# pyodbc>=5.0.0
+
+# pip install schema-scraper[postgresql]
+# psycopg[binary]>=3.0.0
+
+# pip install schema-scraper[mysql]
+# mysql-connector-python>=8.0.0
+
+# pip install schema-scraper[oracle]
+# oracledb>=1.0.0

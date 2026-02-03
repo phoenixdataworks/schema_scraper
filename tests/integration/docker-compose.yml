@@ -1,0 +1,75 @@
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: schema_scraper_mssql
+    environment:
+      ACCEPT_EULA: Y
+      MSSQL_SA_PASSWORD: TestPassword123!
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - ./mssql/init.sql:/init.sql:ro
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "TestPassword123!" -C -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  postgresql:
+    image: postgres:16
+    container_name: schema_scraper_postgresql
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgresql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: pg_isready -U testuser -d testdb
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8.0
+    container_name: schema_scraper_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: testuser
+      MYSQL_PASSWORD: testpass
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: mysqladmin ping -h localhost -u root -prootpass
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  oracle:
+    image: gvenzl/oracle-free:23-slim
+    container_name: schema_scraper_oracle
+    environment:
+      ORACLE_PASSWORD: testpass
+      APP_USER: testuser
+      APP_USER_PASSWORD: testpass
+    ports:
+      - "1521:1521"
+    volumes:
+      - ./oracle/init.sql:/container-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: healthcheck.sh
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+networks:
+  default:
+    name: schema_scraper_test

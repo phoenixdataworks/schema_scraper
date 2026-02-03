@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "schema-scraper"
+version = "0.2.0"
+description = "A CLI tool that extracts database schema metadata and generates markdown documentation"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "phxdataworks"}
+]
+keywords = [
+    "database",
+    "schema",
+    "documentation",
+    "markdown",
+    "mssql",
+    "sql-server",
+    "postgresql",
+    "mysql",
+    "oracle",
+    "sqlite",
+    "database-documentation",
+    "schema-extraction",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Database Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: SQL",
+    "Topic :: Database",
+    "Topic :: Documentation",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+dependencies = [
+    "click>=8.0.0",
+]
+
+[project.optional-dependencies]
+mssql = ["pyodbc>=5.0.0"]
+postgresql = ["psycopg[binary]>=3.0.0"]
+mysql = ["mysql-connector-python>=8.0.0"]
+oracle = ["oracledb>=1.0.0"]
+all = [
+    "pyodbc>=5.0.0",
+    "psycopg[binary]>=3.0.0",
+    "mysql-connector-python>=8.0.0",
+    "oracledb>=1.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+]
+
+[project.scripts]
+schema-scraper = "schema_scraper.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/phxdataworks/schema_scraper"
+Repository = "https://github.com/phxdataworks/schema_scraper"
+Documentation = "https://github.com/phxdataworks/schema_scraper#readme"
+Changelog = "https://github.com/phxdataworks/schema_scraper/blob/main/CHANGELOG.md"
+Issues = "https://github.com/phxdataworks/schema_scraper/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+schema_scraper = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
