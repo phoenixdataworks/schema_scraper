@@ -175,7 +175,7 @@ def scrape(
                             all_triggers = []
                             for table in objects:
                                 all_triggers.extend(table.triggers)
-                            setattr(db, "triggers", all_triggers)
+                            db.triggers = all_triggers
                             click.echo(f"  Found {len(all_triggers)} triggers")
 
         # Generate markdown

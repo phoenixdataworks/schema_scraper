@@ -469,6 +469,7 @@ class Database:
     views: list[View] = field(default_factory=list)
     procedures: list[Procedure] = field(default_factory=list)
     functions: list[Function] = field(default_factory=list)
+    triggers: list[Trigger] = field(default_factory=list)
     types: list[UserDefinedType] = field(default_factory=list)
     sequences: list[Sequence] = field(default_factory=list)
     synonyms: list[Synonym] = field(default_factory=list)
