@@ -2,8 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.1/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.3.0] - 2026-02-18
+
+### Added
+- **Table partitioning support**: Extract partition schemes, boundaries, and storage information for SQL Server, PostgreSQL, and Oracle
+- **Security and access control**: Extract users, roles, permissions, and role memberships for SQL Server, PostgreSQL, and MySQL
+- **Enhanced table features**: Triggers attached to tables, computed columns, unique constraints, and advanced indexing
+- **New object types**: `security` object type for extracting security metadata
+- **Comprehensive metadata**: Row counts, storage statistics, column descriptions, and extended properties
+
+### Enhanced
+- **Table extraction**: Added partitioning, triggers, unique constraints, and security metadata
+- **Index extraction**: Added filter definitions, included columns, and usage statistics
+- **Column extraction**: Enhanced computed column detection across all database types
+- **CLI**: Added `--object-types security` support
+
+### Fixed
+- **Forward reference issues**: Resolved circular import problems in data models
+- **Type annotations**: Added proper string forward references for better type checking
 
 ## [0.2.0] - 2024-02-03
 

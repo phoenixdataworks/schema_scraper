@@ -65,7 +65,7 @@ def cli():
 @click.option("--exclude-schemas", multiple=True, help="Exclude specific schemas")
 @click.option("--object-types", multiple=True,
               type=click.Choice(["tables", "views", "procedures", "functions",
-                               "triggers", "types", "sequences", "synonyms", "all"],
+                               "triggers", "types", "sequences", "synonyms", "security", "all"],
                               case_sensitive=False),
               help="Object types to extract (default: all)")
 @click.option("-v", "--verbose", count=True, help="Increase verbosity (-v info, -vv debug)")
@@ -158,8 +158,25 @@ def scrape(
                 click.echo(f"Extracting {obj_type}...")
                 extractor = ExtractorClass(conn, config)
                 objects = extractor.extract()
-                setattr(db, obj_type, objects)
-                click.echo(f"  Found {len(objects)} {obj_type}")
+
+                if obj_type == "security":
+                    # Security extractor returns a dict with multiple object types
+                    security_data = objects
+                    for sec_type, sec_objects in security_data.items():
+                        setattr(db, sec_type, sec_objects)
+                        click.echo(f"  Found {len(sec_objects)} {sec_type}")
+                else:
+                    setattr(db, obj_type, objects)
+                    click.echo(f"  Found {len(objects)} {obj_type}")
+
+                    if obj_type == "tables":
+                        # Extract triggers from tables if triggers are requested
+                        if config.should_extract("triggers"):
+                            all_triggers = []
+                            for table in objects:
+                                all_triggers.extend(table.triggers)
+                            setattr(db, "triggers", all_triggers)
+                            click.echo(f"  Found {len(all_triggers)} triggers")
 
         # Generate markdown
         click.echo("Generating markdown documentation...")

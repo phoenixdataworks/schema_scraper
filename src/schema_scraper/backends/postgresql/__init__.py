@@ -4,6 +4,7 @@ from .connection import PostgreSQLConnection
 from .extractors import (
     FunctionExtractor,
     ProcedureExtractor,
+    SecurityExtractor,
     SequenceExtractor,
     TableExtractor,
     TriggerExtractor,
@@ -23,6 +24,7 @@ def get_extractors() -> dict:
         "types": TypeExtractor,
         "sequences": SequenceExtractor,
         "synonyms": None,  # PostgreSQL doesn't have synonyms
+        "security": SecurityExtractor,
     }
 
 

@@ -12,6 +12,7 @@ from ...base.models import (
     PrimaryKey,
     Table,
     Trigger,
+    UniqueConstraint,
     View,
 )
 
@@ -31,6 +32,8 @@ class TableExtractor(BaseExtractor):
             table.primary_key = self._get_primary_key(table.name)
             table.foreign_keys = self._get_foreign_keys(table.name)
             table.indexes = self._get_indexes(table.name)
+            table.unique_constraints = self._get_unique_constraints(table.name)
+            table.triggers = self._get_table_triggers(table.name)
             table.row_count = self._get_row_count(table.name)
 
         self._build_references(tables)
@@ -50,11 +53,18 @@ class TableExtractor(BaseExtractor):
 
     def _get_columns(self, table_name: str) -> list[Column]:
         """Get columns for a table."""
-        query = f"PRAGMA table_info('{table_name}')"
+        query = f"PRAGMA table_xinfo('{table_name}')"
         rows = self.connection.execute_dict(query)
         columns = []
 
         for row in rows:
+            # Skip hidden columns that aren't generated (hidden = 1)
+            # hidden = 0: normal column
+            # hidden = 2: generated column (STORED)
+            # hidden = 3: virtual column (VIRTUAL)
+            if row["hidden"] == 1:
+                continue
+
             # Parse type for length/precision
             data_type = row["type"].upper() if row["type"] else "TEXT"
             max_length = None
@@ -71,6 +81,10 @@ class TableExtractor(BaseExtractor):
                 else:
                     max_length = int(match.group(2))
 
+            # Check if this is a computed column
+            is_computed = row["hidden"] in (2, 3)
+            computed_definition = row["sql"] if is_computed else None
+
             columns.append(
                 Column(
                     name=row["name"],
@@ -81,6 +95,8 @@ class TableExtractor(BaseExtractor):
                     is_nullable=not row["notnull"],
                     default_value=row["dflt_value"],
                     is_identity=bool(row["pk"]) and "AUTOINCREMENT" in self._get_create_sql(table_name).upper(),
+                    is_computed=is_computed,
+                    computed_definition=computed_definition,
                     ordinal_position=row["cid"] + 1,
                 )
             )
@@ -160,6 +176,28 @@ class TableExtractor(BaseExtractor):
             )
         return indexes
 
+    def _get_unique_constraints(self, table_name: str) -> list[UniqueConstraint]:
+        """Get unique constraints for a table."""
+        # SQLite doesn't have separate unique constraints - unique indexes serve this purpose
+        # We'll extract unique indexes that are not primary keys as unique constraints
+        query = f"PRAGMA index_list('{table_name}')"
+        rows = self.connection.execute_dict(query)
+
+        unique_constraints = []
+        for row in rows:
+            if row["unique"] and not row["origin"] == "pk":
+                col_query = f"PRAGMA index_info('{row['name']}')"
+                col_rows = self.connection.execute_dict(col_query)
+                columns = [r["name"] for r in sorted(col_rows, key=lambda x: x["seqno"])]
+
+                unique_constraints.append(
+                    UniqueConstraint(
+                        name=row["name"],
+                        columns=columns,
+                    )
+                )
+        return unique_constraints
+
     def _get_row_count(self, table_name: str) -> int:
         """Get row count for a table."""
         query = f"SELECT COUNT(*) FROM '{table_name}'"
@@ -167,6 +205,49 @@ class TableExtractor(BaseExtractor):
             return self.connection.execute_scalar(query) or 0
         except Exception:
             return 0
+
+    def _get_table_triggers(self, table_name: str) -> list[Trigger]:
+        """Get triggers for a table."""
+        query = """
+            SELECT name, tbl_name, sql
+            FROM sqlite_master
+            WHERE type = 'trigger' AND tbl_name = ?
+        """
+        rows = self.connection.execute_dict(query, (table_name,))
+        triggers = []
+
+        for row in rows:
+            sql = row["sql"] or ""
+            sql_upper = sql.upper()
+
+            # Parse trigger type and events from SQL
+            if "INSTEAD OF" in sql_upper:
+                trigger_type = "INSTEAD OF"
+            elif "BEFORE" in sql_upper:
+                trigger_type = "BEFORE"
+            else:
+                trigger_type = "AFTER"
+
+            events = []
+            if "INSERT" in sql_upper:
+                events.append("INSERT")
+            if "UPDATE" in sql_upper:
+                events.append("UPDATE")
+            if "DELETE" in sql_upper:
+                events.append("DELETE")
+
+            triggers.append(
+                Trigger(
+                    schema_name="main",
+                    name=row["name"],
+                    parent_table_schema="main",
+                    parent_table_name=row["tbl_name"],
+                    trigger_type=trigger_type,
+                    events=events,
+                    definition=sql,
+                )
+            )
+        return triggers
 
     def _get_create_sql(self, table_name: str) -> str:
         """Get the CREATE TABLE SQL for a table."""

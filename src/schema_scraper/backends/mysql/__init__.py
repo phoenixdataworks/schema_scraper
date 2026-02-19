@@ -4,6 +4,7 @@ from .connection import MySQLConnection
 from .extractors import (
     FunctionExtractor,
     ProcedureExtractor,
+    SecurityExtractor,
     TableExtractor,
     TriggerExtractor,
     ViewExtractor,
@@ -21,6 +22,7 @@ def get_extractors() -> dict:
         "types": None,  # MySQL doesn't have user-defined types
         "sequences": None,  # MySQL doesn't have sequences (uses AUTO_INCREMENT)
         "synonyms": None,  # MySQL doesn't have synonyms
+        "security": SecurityExtractor,
     }
 
 

@@ -12,12 +12,20 @@ from ...base.models import (
     FunctionColumn,
     Index,
     Parameter,
+    Partition,
+    PartitionScheme,
+    Permission,
     PrimaryKey,
     Procedure,
+    Role,
+    RoleMembership,
     Sequence,
     Table,
+    TablePartitioning,
     Trigger,
     TypeColumn,
+    UniqueConstraint,
+    User,
     UserDefinedType,
     View,
 )
@@ -39,6 +47,9 @@ class TableExtractor(BaseExtractor):
             table.foreign_keys = self._get_foreign_keys(table.schema_name, table.name)
             table.indexes = self._get_indexes(table.schema_name, table.name)
             table.check_constraints = self._get_check_constraints(table.schema_name, table.name)
+            table.unique_constraints = self._get_unique_constraints(table.schema_name, table.name)
+            table.triggers = self._get_table_triggers(table.schema_name, table.name)
+            table.partitioning = self._get_partitioning(table.schema_name, table.name)
             table.description = self._get_description(table.schema_name, table.name)
             stats = self._get_table_stats(table.schema_name, table.name)
             table.row_count = stats.get("row_count", 0)
@@ -209,6 +220,70 @@ class TableExtractor(BaseExtractor):
         """
         rows = self.connection.execute_dict(query, (schema_name, table_name))
         return [CheckConstraint(name=row["constraint_name"], definition=row["definition"]) for row in rows]
+
+    def _get_unique_constraints(self, schema_name: str, table_name: str) -> list[UniqueConstraint]:
+        """Get unique constraints for a table."""
+        query = """
+            SELECT
+                tc.constraint_name,
+                array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS columns
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            WHERE tc.constraint_type = 'UNIQUE'
+            AND tc.table_schema = %s AND tc.table_name = %s
+            GROUP BY tc.constraint_name
+        """
+        rows = self.connection.execute_dict(query, (schema_name, table_name))
+        return [UniqueConstraint(name=row["constraint_name"], columns=row["columns"]) for row in rows]
+
+    def _get_table_triggers(self, schema_name: str, table_name: str) -> list[Trigger]:
+        """Get triggers for a table."""
+        query = """
+            SELECT
+                t.tgname AS trigger_name,
+                CASE
+                    WHEN t.tgtype & 2 = 2 THEN 'BEFORE'
+                    WHEN t.tgtype & 64 = 64 THEN 'INSTEAD OF'
+                    ELSE 'AFTER'
+                END AS trigger_type,
+                t.tgtype & 4 = 4 AS is_insert,
+                t.tgtype & 8 = 8 AS is_delete,
+                t.tgtype & 16 = 16 AS is_update,
+                NOT t.tgenabled = 'D' AS is_enabled,
+                pg_get_triggerdef(t.oid) AS definition
+            FROM pg_trigger t
+            JOIN pg_class c ON t.tgrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE NOT t.tgisinternal
+            AND n.nspname = %s AND c.relname = %s
+        """
+        rows = self.connection.execute_dict(query, (schema_name, table_name))
+        triggers = []
+
+        for row in rows:
+            events = []
+            if row["is_insert"]:
+                events.append("INSERT")
+            if row["is_update"]:
+                events.append("UPDATE")
+            if row["is_delete"]:
+                events.append("DELETE")
+
+            triggers.append(
+                Trigger(
+                    schema_name=schema_name,
+                    name=row["trigger_name"],
+                    parent_table_schema=schema_name,
+                    parent_table_name=table_name,
+                    trigger_type=row["trigger_type"],
+                    events=events,
+                    definition=row["definition"],
+                    is_disabled=not row["is_enabled"],
+                )
+            )
+        return triggers
 
     def _get_description(self, schema_name: str, table_name: str) -> Optional[str]:
         """Get table description from pg_description."""
@@ -580,6 +655,344 @@ class FunctionExtractor(BaseExtractor):
             )
             for row in rows
         ]
+
+    def _get_partitioning(self, schema_name: str, table_name: str) -> Optional[TablePartitioning]:
+        """Get partitioning information for a table."""
+        # Check if table is partitioned (PostgreSQL 10+ declarative partitioning)
+        partition_query = """
+            SELECT
+                CASE
+                    WHEN pt.partstrat = 'r' THEN 'RANGE'
+                    WHEN pt.partstrat = 'l' THEN 'LIST'
+                    WHEN pt.partstrat = 'h' THEN 'HASH'
+                    ELSE 'UNKNOWN'
+                END AS partition_type,
+                pg_get_partkeydef(pt.oid) AS partition_key
+            FROM pg_class c
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            LEFT JOIN pg_partitioned_table pt ON c.oid = pt.partrelid
+            WHERE n.nspname = %s AND c.relname = %s AND c.relkind = 'p'
+        """
+
+        partition_rows = self.connection.execute_dict(partition_query, (schema_name, table_name))
+        if partition_rows:
+            row = partition_rows[0]
+
+            # Get partition information
+            partitions_query = """
+                SELECT
+                    c.relname AS partition_name,
+                    pg_get_expr(pt.partattrs, pt.partrelid) AS partition_expression,
+                    obj_description(c.oid) AS description
+                FROM pg_class pc
+                JOIN pg_namespace pn ON pc.relnamespace = pn.oid
+                JOIN pg_inherits i ON pc.oid = i.inhrelid
+                JOIN pg_class c ON i.inhparent = c.oid
+                JOIN pg_namespace n ON c.relnamespace = n.oid
+                LEFT JOIN pg_partitioned_table pt ON c.oid = pt.partrelid
+                WHERE n.nspname = %s AND c.relname = %s AND pc.relkind = 'r'
+                ORDER BY pc.relname
+            """
+
+            partitions_rows = self.connection.execute_dict(partitions_query, (schema_name, table_name))
+
+            partitions = []
+            for i, part_row in enumerate(partitions_rows, 1):
+                # Get row count for each partition
+                count_query = f"SELECT COUNT(*) FROM \"{schema_name}\".\"{part_row['partition_name']}\""
+                try:
+                    row_count = self.connection.execute_scalar(count_query) or 0
+                except Exception:
+                    row_count = 0
+
+                partitions.append(Partition(
+                    partition_number=i,
+                    boundary_value=part_row["partition_expression"],
+                    row_count=row_count,
+                ))
+
+            # Extract partition column from key definition
+            partition_column = ""
+            if row["partition_key"]:
+                # Simple regex to extract column name from partition key
+                import re
+                match = re.search(r'(\w+)', row["partition_key"])
+                if match:
+                    partition_column = match.group(1)
+
+            partition_scheme = PartitionScheme(
+                name=f"{table_name}_partitioning",
+                partition_column=partition_column,
+                partition_type=row["partition_type"],
+                partitions=partitions,
+            )
+
+            return TablePartitioning(
+                partition_scheme=partition_scheme,
+                is_partitioned=True,
+            )
+
+        # Check for inheritance-based partitioning (older PostgreSQL)
+        inheritance_query = """
+            SELECT COUNT(*) as child_count
+            FROM pg_class pc
+            JOIN pg_namespace pn ON pc.relnamespace = pn.oid
+            JOIN pg_inherits i ON pc.oid = i.inhrelid
+            JOIN pg_class c ON i.inhparent = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE n.nspname = %s AND c.relname = %s AND pc.relkind = 'r'
+        """
+
+        inheritance_rows = self.connection.execute_dict(inheritance_query, (schema_name, table_name))
+        if inheritance_rows and inheritance_rows[0]["child_count"] > 0:
+            # Get child tables (partitions)
+            child_query = """
+                SELECT pc.relname AS partition_name, obj_description(pc.oid) AS description
+                FROM pg_class pc
+                JOIN pg_namespace pn ON pc.relnamespace = pn.oid
+                JOIN pg_inherits i ON pc.oid = i.inhrelid
+                JOIN pg_class c ON i.inhparent = c.oid
+                JOIN pg_namespace n ON c.relnamespace = n.oid
+                WHERE n.nspname = %s AND c.relname = %s AND pc.relkind = 'r'
+                ORDER BY pc.relname
+            """
+
+            child_rows = self.connection.execute_dict(child_query, (schema_name, table_name))
+
+            partitions = []
+            for i, child_row in enumerate(child_rows, 1):
+                # Get row count for each child table
+                count_query = f"SELECT COUNT(*) FROM \"{schema_name}\".\"{child_row['partition_name']}\""
+                try:
+                    row_count = self.connection.execute_scalar(count_query) or 0
+                except Exception:
+                    row_count = 0
+
+                partitions.append(Partition(
+                    partition_number=i,
+                    boundary_value=f"CHECK constraint on {child_row['partition_name']}",
+                    row_count=row_count,
+                ))
+
+            partition_scheme = PartitionScheme(
+                name=f"{table_name}_inheritance",
+                partition_type="INHERITANCE",
+                partitions=partitions,
+            )
+
+            return TablePartitioning(
+                partition_scheme=partition_scheme,
+                is_partitioned=True,
+            )
+
+        return TablePartitioning(is_partitioned=False)
+
+
+class SecurityExtractor(BaseExtractor):
+    """Extracts security metadata from PostgreSQL."""
+
+    def extract(self) -> dict:
+        """Extract all security metadata."""
+        users = self._extract_users()
+        logger.info(f"Found {len(users)} users")
+        roles = self._extract_roles()
+        logger.info(f"Found {len(roles)} roles")
+        permissions = self._extract_permissions()
+        logger.info(f"Found {len(permissions)} permissions")
+        memberships = self._extract_role_memberships()
+        logger.info(f"Found {len(memberships)} role memberships")
+
+        return {
+            "users": users,
+            "roles": roles,
+            "permissions": permissions,
+            "role_memberships": memberships,
+        }
+
+    def _extract_users(self) -> list[User]:
+        """Extract all database users (roles that can login)."""
+        query = """
+            SELECT
+                r.rolname AS user_name,
+                r.rolsuper AS is_superuser,
+                r.rolinherit AS inherits_roles,
+                r.rolcreaterole AS can_create_roles,
+                r.rolcreatedb AS can_create_databases,
+                r.rolcanlogin AS can_login,
+                r.rolreplication AS can_replicate,
+                r.rolbypassrls AS bypass_rls,
+                r.rolconnlimit AS connection_limit,
+                r.rolvaliduntil AS valid_until,
+                r.rolpassword IS NOT NULL AS has_password
+            FROM pg_roles r
+            WHERE r.rolcanlogin = true
+            ORDER BY r.rolname
+        """
+        rows = self.connection.execute_dict(query)
+        return [
+            User(
+                name=row["user_name"],
+                authentication_type="PASSWORD" if row["has_password"] else "EXTERNAL",
+                is_disabled=not row["can_login"],
+                create_date=None,  # PostgreSQL doesn't track creation date in pg_roles
+                modify_date=None,
+            )
+            for row in rows
+        ]
+
+    def _extract_roles(self) -> list[Role]:
+        """Extract all database roles."""
+        query = """
+            SELECT
+                r.rolname AS role_name,
+                CASE
+                    WHEN r.rolsuper THEN 'SUPERUSER'
+                    WHEN r.rolcreaterole THEN 'ROLE_ADMIN'
+                    ELSE 'DATABASE_ROLE'
+                END AS role_type,
+                NOT r.rolcanlogin AS is_disabled
+            FROM pg_roles r
+            ORDER BY r.rolname
+        """
+        rows = self.connection.execute_dict(query)
+        return [
+            Role(
+                name=row["role_name"],
+                role_type=row["role_type"],
+                is_disabled=bool(row["is_disabled"]),
+                create_date=None,
+                modify_date=None,
+            )
+            for row in rows
+        ]
+
+    def _extract_permissions(self) -> list[Permission]:
+        """Extract object-level permissions from ACL columns."""
+        permissions = []
+
+        # Extract table permissions
+        table_query = """
+            SELECT
+                n.nspname AS schema_name,
+                c.relname AS object_name,
+                'TABLE' AS object_type,
+                c.relacl AS acl
+            FROM pg_class c
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE c.relkind IN ('r', 'p')  -- regular table or partitioned table
+            AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+            AND c.relacl IS NOT NULL
+        """
+        table_rows = self.connection.execute_dict(table_query)
+        for row in table_rows:
+            perms = self._parse_acl(row["acl"])
+            for perm in perms:
+                permissions.append(Permission(
+                    grantee=perm["grantee"],
+                    grantee_type="ROLE",
+                    object_schema=row["schema_name"],
+                    object_name=row["object_name"],
+                    object_type=row["object_type"],
+                    permission=perm["permission"],
+                    state="GRANT",
+                    grantor=perm.get("grantor"),
+                ))
+
+        # Extract schema permissions
+        schema_query = """
+            SELECT
+                n.nspname AS schema_name,
+                n.nspacl AS acl
+            FROM pg_namespace n
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+            AND n.nspacl IS NOT NULL
+        """
+        schema_rows = self.connection.execute_dict(schema_query)
+        for row in schema_rows:
+            perms = self._parse_acl(row["acl"])
+            for perm in perms:
+                permissions.append(Permission(
+                    grantee=perm["grantee"],
+                    grantee_type="ROLE",
+                    object_schema=row["schema_name"],
+                    object_name="",
+                    object_type="SCHEMA",
+                    permission=perm["permission"],
+                    state="GRANT",
+                    grantor=perm.get("grantor"),
+                ))
+
+        return permissions
+
+    def _extract_role_memberships(self) -> list[RoleMembership]:
+        """Extract role memberships."""
+        query = """
+            SELECT
+                m.rolname AS member_name,
+                r.rolname AS role_name,
+                CASE WHEN m.rolcanlogin THEN 'USER' ELSE 'ROLE' END AS member_type
+            FROM pg_auth_members am
+            JOIN pg_roles m ON am.member = m.oid
+            JOIN pg_roles r ON am.roleid = r.oid
+            ORDER BY r.rolname, m.rolname
+        """
+        rows = self.connection.execute_dict(query)
+        return [
+            RoleMembership(
+                member_name=row["member_name"],
+                role_name=row["role_name"],
+                member_type=row["member_type"],
+            )
+            for row in rows
+        ]
+
+    def _parse_acl(self, acl_string: str) -> list[dict]:
+        """Parse PostgreSQL ACL string into permission records."""
+        if not acl_string:
+            return []
+
+        permissions = []
+        # ACL format: role=permissions/grantor,role=permissions/grantor,...
+        entries = acl_string.strip('{}').split(',')
+        for entry in entries:
+            if '=' not in entry:
+                continue
+            role_part, rest = entry.split('=', 1)
+            if '/' in rest:
+                perms, grantor = rest.split('/', 1)
+            else:
+                perms = rest
+                grantor = None
+
+            # Parse individual permissions
+            for perm_char in perms:
+                perm_name = self._map_permission_char(perm_char)
+                if perm_name:
+                    permissions.append({
+                        "grantee": role_part,
+                        "permission": perm_name,
+                        "grantor": grantor,
+                    })
+
+        return permissions
+
+    def _map_permission_char(self, char: str) -> str:
+        """Map PostgreSQL permission character to permission name."""
+        mapping = {
+            'r': 'SELECT',
+            'w': 'UPDATE',
+            'a': 'INSERT',
+            'd': 'DELETE',
+            'D': 'TRUNCATE',
+            'x': 'REFERENCES',
+            't': 'TRIGGER',
+            'U': 'USAGE',
+            'C': 'CREATE',
+            'c': 'CONNECT',
+            'T': 'TEMPORARY',
+            'X': 'EXECUTE',
+        }
+        return mapping.get(char)
 
 
 class TriggerExtractor(BaseExtractor):

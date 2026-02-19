@@ -49,6 +49,7 @@ class ScraperConfig:
             "types",
             "sequences",
             "synonyms",
+            "security",
         ]
     )
 

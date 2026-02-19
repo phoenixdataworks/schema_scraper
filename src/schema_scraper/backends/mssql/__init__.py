@@ -4,6 +4,7 @@ from .connection import MSSQLConnection
 from .extractors import (
     FunctionExtractor,
     ProcedureExtractor,
+    SecurityExtractor,
     SequenceExtractor,
     SynonymExtractor,
     TableExtractor,
@@ -24,6 +25,7 @@ def get_extractors() -> dict:
         "types": TypeExtractor,
         "sequences": SequenceExtractor,
         "synonyms": SynonymExtractor,
+        "security": SecurityExtractor,
     }
 
 

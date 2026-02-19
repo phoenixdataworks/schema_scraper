@@ -1,7 +1,10 @@
 """Dataclasses for all database schema objects."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import List
 
 
 @dataclass
@@ -96,16 +99,108 @@ class CheckConstraint:
 
 
 @dataclass
+class UniqueConstraint:
+    """Represents a unique constraint."""
+
+    name: str
+    columns: list[str]
+
+
+@dataclass
+class Partition:
+    """Represents a table partition."""
+
+    partition_number: int
+    boundary_value: Optional[str] = None
+    filegroup_name: Optional[str] = None
+    tablespace_name: Optional[str] = None
+    row_count: int = 0
+    data_compression: Optional[str] = None
+    is_readonly: bool = False
+
+
+@dataclass
+class PartitionScheme:
+    """Represents a partition scheme/function."""
+
+    name: str
+    partition_function_name: Optional[str] = None
+    partition_column: str = ""
+    partition_type: str = "RANGE"  # RANGE, LIST, HASH
+    boundary_type: str = "RIGHT"  # LEFT, RIGHT (SQL Server)
+    partitions: list[Partition] = field(default_factory=list)
+
+
+@dataclass
+class TablePartitioning:
+    """Represents table partitioning information."""
+
+    partition_scheme: Optional[PartitionScheme] = None
+    is_partitioned: bool = False
+
+
+@dataclass
+class User:
+    """Represents a database user."""
+
+    name: str
+    schema_name: Optional[str] = None
+    authentication_type: str = "UNKNOWN"
+    is_disabled: bool = False
+    default_schema: Optional[str] = None
+    create_date: Optional[str] = None
+    modify_date: Optional[str] = None
+
+
+@dataclass
+class Role:
+    """Represents a database role."""
+
+    name: str
+    schema_name: Optional[str] = None
+    role_type: str = "DATABASE_ROLE"  # DATABASE_ROLE, APPLICATION_ROLE, SERVER_ROLE
+    is_disabled: bool = False
+    create_date: Optional[str] = None
+    modify_date: Optional[str] = None
+
+
+@dataclass
+class Permission:
+    """Represents an object-level permission."""
+
+    grantee: str  # User or role name
+    grantee_type: str  # USER or ROLE
+    object_schema: str
+    object_name: str
+    object_type: str  # TABLE, VIEW, PROCEDURE, etc.
+    permission: str  # SELECT, INSERT, UPDATE, etc.
+    state: str  # GRANT, DENY, REVOKE
+    grantor: Optional[str] = None
+
+
+@dataclass
+class RoleMembership:
+    """Represents user-role membership."""
+
+    member_name: str
+    role_name: str
+    member_type: str = "USER"  # USER or ROLE
+
+
+@dataclass
 class Table:
     """Represents a database table."""
 
     schema_name: str
     name: str
-    columns: list[Column] = field(default_factory=list)
-    primary_key: Optional[PrimaryKey] = None
-    foreign_keys: list[ForeignKey] = field(default_factory=list)
-    indexes: list[Index] = field(default_factory=list)
-    check_constraints: list[CheckConstraint] = field(default_factory=list)
+    columns: "list[Column]" = field(default_factory=list)
+    primary_key: Optional["PrimaryKey"] = None
+    foreign_keys: "list[ForeignKey]" = field(default_factory=list)
+    indexes: "list[Index]" = field(default_factory=list)
+    check_constraints: "list[CheckConstraint]" = field(default_factory=list)
+    unique_constraints: "list[UniqueConstraint]" = field(default_factory=list)
+    triggers: "list[Trigger]" = field(default_factory=list)
+    partitioning: Optional["TablePartitioning"] = None
     description: Optional[str] = None
     row_count: int = 0
     total_space_kb: int = 0
@@ -123,7 +218,7 @@ class View:
 
     schema_name: str
     name: str
-    columns: list[Column] = field(default_factory=list)
+    columns: "list[Column]" = field(default_factory=list)
     definition: Optional[str] = None
     description: Optional[str] = None
     is_materialized: bool = False
@@ -174,7 +269,7 @@ class Procedure:
 
     schema_name: str
     name: str
-    parameters: list[Parameter] = field(default_factory=list)
+    parameters: "list[Parameter]" = field(default_factory=list)
     definition: Optional[str] = None
     description: Optional[str] = None
     language: str = "SQL"
@@ -223,9 +318,9 @@ class Function:
     schema_name: str
     name: str
     function_type: str  # SCALAR, TABLE, AGGREGATE, WINDOW
-    parameters: list[Parameter] = field(default_factory=list)
+    parameters: "list[Parameter]" = field(default_factory=list)
     return_type: Optional[str] = None  # For scalar functions
-    return_columns: list[FunctionColumn] = field(default_factory=list)  # For table-valued
+    return_columns: "list[FunctionColumn]" = field(default_factory=list)  # For table-valued
     definition: Optional[str] = None
     description: Optional[str] = None
     language: str = "SQL"
@@ -298,7 +393,7 @@ class UserDefinedType:
     precision: Optional[int] = None
     scale: Optional[int] = None
     is_nullable: bool = True
-    columns: list[TypeColumn] = field(default_factory=list)  # For composite/table types
+    columns: "list[TypeColumn]" = field(default_factory=list)  # For composite/table types
     enum_values: list[str] = field(default_factory=list)  # For enum types
     check_constraint: Optional[str] = None  # For domain types
     description: Optional[str] = None
@@ -356,7 +451,6 @@ class Schema:
     views: list[View] = field(default_factory=list)
     procedures: list[Procedure] = field(default_factory=list)
     functions: list[Function] = field(default_factory=list)
-    triggers: list[Trigger] = field(default_factory=list)
     types: list[UserDefinedType] = field(default_factory=list)
     sequences: list[Sequence] = field(default_factory=list)
     synonyms: list[Synonym] = field(default_factory=list)
@@ -375,7 +469,10 @@ class Database:
     views: list[View] = field(default_factory=list)
     procedures: list[Procedure] = field(default_factory=list)
     functions: list[Function] = field(default_factory=list)
-    triggers: list[Trigger] = field(default_factory=list)
     types: list[UserDefinedType] = field(default_factory=list)
     sequences: list[Sequence] = field(default_factory=list)
     synonyms: list[Synonym] = field(default_factory=list)
+    users: list[User] = field(default_factory=list)
+    roles: list[Role] = field(default_factory=list)
+    permissions: list[Permission] = field(default_factory=list)
+    role_memberships: list[RoleMembership] = field(default_factory=list)

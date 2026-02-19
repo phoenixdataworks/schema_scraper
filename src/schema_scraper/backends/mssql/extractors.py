@@ -13,13 +13,21 @@ from ...base.models import (
     FunctionColumn,
     Index,
     Parameter,
+    Partition,
+    PartitionScheme,
+    Permission,
     PrimaryKey,
     Procedure,
+    Role,
+    RoleMembership,
     Sequence,
     Synonym,
     Table,
+    TablePartitioning,
     Trigger,
     TypeColumn,
+    UniqueConstraint,
+    User,
     UserDefinedType,
     View,
 )
@@ -78,6 +86,9 @@ class TableExtractor(MSSQLBaseExtractor):
             table.foreign_keys = self._get_foreign_keys(table.schema_name, table.name)
             table.indexes = self._get_indexes(table.schema_name, table.name)
             table.check_constraints = self._get_check_constraints(table.schema_name, table.name)
+            table.unique_constraints = self._get_unique_constraints(table.schema_name, table.name)
+            table.triggers = self._get_table_triggers(table.schema_name, table.name)
+            table.partitioning = self._get_partitioning(table.schema_name, table.name)
             table.description = self.get_extended_property(table.schema_name, table.name)
             stats = self._get_table_stats(table.schema_name, table.name)
             table.row_count = stats.get("row_count", 0)
@@ -274,6 +285,197 @@ class TableExtractor(MSSQLBaseExtractor):
         """
         rows = self.connection.execute_dict(query, (schema_name, table_name))
         return [CheckConstraint(name=row["constraint_name"], definition=row["definition"]) for row in rows]
+
+    def _get_unique_constraints(self, schema_name: str, table_name: str) -> list[UniqueConstraint]:
+        """Get unique constraints for a table."""
+        query = """
+            SELECT kc.name AS constraint_name
+            FROM sys.key_constraints kc
+            JOIN sys.tables t ON kc.parent_object_id = t.object_id
+            JOIN sys.schemas s ON t.schema_id = s.schema_id
+            WHERE kc.type = 'UQ' AND s.name = ? AND t.name = ?
+        """
+        constraint_rows = self.connection.execute_dict(query, (schema_name, table_name))
+        unique_constraints = []
+
+        for constraint_row in constraint_rows:
+            columns_query = """
+                SELECT c.name
+                FROM sys.index_columns ic
+                JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                JOIN sys.key_constraints kc ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id
+                JOIN sys.tables t ON kc.parent_object_id = t.object_id
+                JOIN sys.schemas s ON t.schema_id = s.schema_id
+                WHERE kc.name = ? AND s.name = ? AND t.name = ?
+                ORDER BY ic.key_ordinal
+            """
+            col_rows = self.connection.execute_dict(
+                columns_query, (constraint_row["constraint_name"], schema_name, table_name)
+            )
+            unique_constraints.append(
+                UniqueConstraint(
+                    name=constraint_row["constraint_name"],
+                    columns=[row["name"] for row in col_rows],
+                )
+            )
+        return unique_constraints
+
+    def _get_partitioning(self, schema_name: str, table_name: str) -> Optional[TablePartitioning]:
+        """Get partitioning information for a table."""
+        # Check if table is partitioned
+        partition_check_query = """
+            SELECT ps.name AS partition_scheme_name, pf.name AS partition_function_name,
+                   pf.fanout AS partition_count, pf.boundary_value_on_right
+            FROM sys.tables t
+            JOIN sys.schemas s ON t.schema_id = s.schema_id
+            JOIN sys.indexes i ON t.object_id = i.object_id AND i.index_id IN (0, 1)
+            JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+            JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
+            WHERE s.name = ? AND t.name = ?
+        """
+
+        partition_rows = self.connection.execute_dict(partition_check_query, (schema_name, table_name))
+        if not partition_rows:
+            return TablePartitioning(is_partitioned=False)
+
+        row = partition_rows[0]
+
+        # Get partition column
+        column_query = """
+            SELECT c.name AS column_name
+            FROM sys.tables t
+            JOIN sys.schemas s ON t.schema_id = s.schema_id
+            JOIN sys.indexes i ON t.object_id = i.object_id AND i.index_id IN (0, 1)
+            JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+            JOIN sys.partition_parameters pp ON ps.function_id = pp.function_id
+            JOIN sys.columns c ON pp.object_id = c.object_id AND pp.parameter_id = c.column_id
+            WHERE s.name = ? AND t.name = ?
+        """
+        column_rows = self.connection.execute_dict(column_query, (schema_name, table_name))
+        partition_column = column_rows[0]["column_name"] if column_rows else ""
+
+        # Get partition boundaries
+        boundary_query = """
+            SELECT prv.boundary_id, prv.value AS boundary_value, fg.name AS filegroup_name
+            FROM sys.partition_range_values prv
+            JOIN sys.partition_functions pf ON prv.function_id = pf.function_id
+            JOIN sys.partition_schemes ps ON pf.function_id = ps.function_id
+            JOIN sys.destination_data_spaces dds ON ps.data_space_id = dds.partition_scheme_id
+                   AND prv.boundary_id = dds.destination_id
+            JOIN sys.filegroups fg ON dds.data_space_id = fg.data_space_id
+            WHERE pf.name = ?
+            ORDER BY prv.boundary_id
+        """
+        boundary_rows = self.connection.execute_dict(boundary_query, (row["partition_function_name"],))
+
+        # Get partition statistics
+        partition_stats_query = """
+            SELECT p.partition_number, p.rows AS row_count, fg.name AS filegroup_name,
+                   p.data_compression_desc AS data_compression
+            FROM sys.tables t
+            JOIN sys.schemas s ON t.schema_id = s.schema_id
+            JOIN sys.indexes i ON t.object_id = i.object_id AND i.index_id IN (0, 1)
+            JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
+            JOIN sys.destination_data_spaces dds ON p.partition_number = dds.destination_id
+                   AND i.data_space_id = dds.partition_scheme_id
+            JOIN sys.filegroups fg ON dds.data_space_id = fg.data_space_id
+            WHERE s.name = ? AND t.name = ?
+            ORDER BY p.partition_number
+        """
+        stats_rows = self.connection.execute_dict(partition_stats_query, (schema_name, table_name))
+
+        # Build partitions list
+        partitions = []
+        stats_dict = {row["partition_number"]: row for row in stats_rows}
+
+        for boundary_row in boundary_rows:
+            partition_num = boundary_row["boundary_id"] + 1  # SQL Server partitions are 1-based
+            stats = stats_dict.get(partition_num, {})
+
+            partitions.append(Partition(
+                partition_number=partition_num,
+                boundary_value=str(boundary_row["boundary_value"]) if boundary_row["boundary_value"] else None,
+                filegroup_name=boundary_row["filegroup_name"],
+                row_count=stats.get("row_count", 0),
+                data_compression=stats.get("data_compression"),
+            ))
+
+        # Handle the last partition (no boundary)
+        if stats_rows and len(stats_rows) > len(boundary_rows):
+            last_partition = stats_rows[-1]
+            if last_partition["partition_number"] > len(boundary_rows):
+                partitions.append(Partition(
+                    partition_number=last_partition["partition_number"],
+                    filegroup_name=last_partition["filegroup_name"],
+                    row_count=last_partition["row_count"],
+                    data_compression=last_partition["data_compression"],
+                ))
+
+        partition_scheme = PartitionScheme(
+            name=row["partition_scheme_name"],
+            partition_function_name=row["partition_function_name"],
+            partition_column=partition_column,
+            partition_type="RANGE",
+            boundary_type="RIGHT" if row["boundary_value_on_right"] else "LEFT",
+            partitions=partitions,
+        )
+
+        return TablePartitioning(
+            partition_scheme=partition_scheme,
+            is_partitioned=True,
+        )
+
+    def _get_table_triggers(self, schema_name: str, table_name: str) -> list[Trigger]:
+        """Get triggers for a table."""
+        query = """
+            SELECT
+                tr.name AS trigger_name,
+                CASE WHEN tr.is_instead_of_trigger = 1 THEN 'INSTEAD OF' ELSE 'AFTER' END AS trigger_type,
+                OBJECTPROPERTY(tr.object_id, 'ExecIsInsertTrigger') AS is_insert,
+                OBJECTPROPERTY(tr.object_id, 'ExecIsUpdateTrigger') AS is_update,
+                OBJECTPROPERTY(tr.object_id, 'ExecIsDeleteTrigger') AS is_delete,
+                tr.is_disabled
+            FROM sys.triggers tr
+            JOIN sys.tables pt ON tr.parent_id = pt.object_id
+            JOIN sys.schemas ps ON pt.schema_id = ps.schema_id
+            WHERE tr.is_ms_shipped = 0 AND tr.parent_class = 1
+            AND ps.name = ? AND pt.name = ?
+        """
+        rows = self.connection.execute_dict(query, (schema_name, table_name))
+        triggers = []
+
+        for row in rows:
+            events = []
+            if row["is_insert"]:
+                events.append("INSERT")
+            if row["is_update"]:
+                events.append("UPDATE")
+            if row["is_delete"]:
+                events.append("DELETE")
+
+            # Get trigger definition
+            def_query = """
+                SELECT m.definition
+                FROM sys.sql_modules m
+                JOIN sys.triggers tr ON m.object_id = tr.object_id
+                WHERE tr.name = ?
+            """
+            def_rows = self.connection.execute_dict(def_query, (row["trigger_name"],))
+            definition = def_rows[0]["definition"] if def_rows else None
+
+            triggers.append(
+                Trigger(
+                    schema_name=schema_name,
+                    name=row["trigger_name"],
+                    parent_table_schema=schema_name,
+                    parent_table_name=table_name,
+                    trigger_type=row["trigger_type"],
+                    events=events,
+                    definition=definition,
+                    is_disabled=bool(row["is_disabled"]),
+                )
+            )
+        return triggers
 
     def _get_table_stats(self, schema_name: str, table_name: str) -> dict[str, Any]:
         """Get row count and space statistics for a table."""
@@ -865,3 +1067,137 @@ class SynonymExtractor(MSSQLBaseExtractor):
         elif len(parts) >= 4:
             return {"server": parts[0], "database": parts[1], "schema": parts[2], "object": parts[3]}
         return {"server": None, "database": None, "schema": None, "object": base_object_name}
+
+
+class SecurityExtractor(MSSQLBaseExtractor):
+    """Extracts security metadata from SQL Server."""
+
+    def extract(self) -> dict:
+        """Extract all security metadata."""
+        users = self._extract_users()
+        logger.info(f"Found {len(users)} users")
+        roles = self._extract_roles()
+        logger.info(f"Found {len(roles)} roles")
+        permissions = self._extract_permissions()
+        logger.info(f"Found {len(permissions)} permissions")
+        memberships = self._extract_role_memberships()
+        logger.info(f"Found {len(memberships)} role memberships")
+
+        return {
+            "users": users,
+            "roles": roles,
+            "permissions": permissions,
+            "role_memberships": memberships,
+        }
+
+    def _extract_users(self) -> list[User]:
+        """Extract all database users."""
+        query = """
+            SELECT
+                u.name AS user_name,
+                s.name AS schema_name,
+                u.type_desc AS user_type,
+                u.is_disabled,
+                u.default_schema_name,
+                u.create_date,
+                u.modify_date
+            FROM sys.database_principals u
+            LEFT JOIN sys.schemas s ON u.default_schema_name = s.name
+            WHERE u.type IN ('S', 'U', 'G', 'E')  -- SQL user, Windows user, Windows group, external user
+            ORDER BY u.name
+        """
+        rows = self.connection.execute_dict(query)
+        return [
+            User(
+                name=row["user_name"],
+                schema_name=row["schema_name"],
+                authentication_type=row["user_type"],
+                is_disabled=bool(row["is_disabled"]),
+                default_schema=row["default_schema_name"],
+                create_date=str(row["create_date"]) if row["create_date"] else None,
+                modify_date=str(row["modify_date"]) if row["modify_date"] else None,
+            )
+            for row in rows
+        ]
+
+    def _extract_roles(self) -> list[Role]:
+        """Extract all database roles."""
+        query = """
+            SELECT
+                r.name AS role_name,
+                r.type_desc AS role_type,
+                r.is_disabled,
+                r.create_date,
+                r.modify_date
+            FROM sys.database_principals r
+            WHERE r.type = 'R'  -- Database role
+            ORDER BY r.name
+        """
+        rows = self.connection.execute_dict(query)
+        return [
+            Role(
+                name=row["role_name"],
+                role_type=row["role_type"],
+                is_disabled=bool(row["is_disabled"]),
+                create_date=str(row["create_date"]) if row["create_date"] else None,
+                modify_date=str(row["modify_date"]) if row["modify_date"] else None,
+            )
+            for row in rows
+        ]
+
+    def _extract_permissions(self) -> list[Permission]:
+        """Extract all object-level permissions."""
+        query = """
+            SELECT
+                dp.name AS grantee_name,
+                dp.type_desc AS grantee_type,
+                s.name AS object_schema,
+                o.name AS object_name,
+                o.type_desc AS object_type,
+                p.permission_name,
+                p.state_desc AS state,
+                gp.name AS grantor_name
+            FROM sys.database_permissions p
+            JOIN sys.database_principals dp ON p.grantee_principal_id = dp.principal_id
+            JOIN sys.objects o ON p.major_id = o.object_id
+            JOIN sys.schemas s ON o.schema_id = s.schema_id
+            LEFT JOIN sys.database_principals gp ON p.grantor_principal_id = gp.principal_id
+            WHERE p.class = 1  -- Object permissions
+            ORDER BY s.name, o.name, dp.name, p.permission_name
+        """
+        rows = self.connection.execute_dict(query)
+        return [
+            Permission(
+                grantee=row["grantee_name"],
+                grantee_type=row["grantee_type"],
+                object_schema=row["object_schema"],
+                object_name=row["object_name"],
+                object_type=row["object_type"],
+                permission=row["permission_name"],
+                state=row["state"],
+                grantor=row["grantor_name"],
+            )
+            for row in rows
+        ]
+
+    def _extract_role_memberships(self) -> list[RoleMembership]:
+        """Extract all role memberships."""
+        query = """
+            SELECT
+                m.name AS member_name,
+                r.name AS role_name,
+                m.type_desc AS member_type
+            FROM sys.database_role_members rm
+            JOIN sys.database_principals r ON rm.role_principal_id = r.principal_id
+            JOIN sys.database_principals m ON rm.member_principal_id = m.principal_id
+            ORDER BY r.name, m.name
+        """
+        rows = self.connection.execute_dict(query)
+        return [
+            RoleMembership(
+                member_name=row["member_name"],
+                role_name=row["role_name"],
+                member_type=row["member_type"],
+            )
+            for row in rows
+        ]

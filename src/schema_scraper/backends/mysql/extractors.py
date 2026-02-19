@@ -11,10 +11,15 @@ from ...base.models import (
     Function,
     Index,
     Parameter,
+    Permission,
     PrimaryKey,
     Procedure,
+    Role,
+    RoleMembership,
     Table,
     Trigger,
+    UniqueConstraint,
+    User,
     View,
 )
 
@@ -35,6 +40,8 @@ class TableExtractor(BaseExtractor):
             table.foreign_keys = self._get_foreign_keys(table.schema_name, table.name)
             table.indexes = self._get_indexes(table.schema_name, table.name)
             table.check_constraints = self._get_check_constraints(table.schema_name, table.name)
+            table.unique_constraints = self._get_unique_constraints(table.schema_name, table.name)
+            table.triggers = self._get_table_triggers(table.schema_name, table.name)
             stats = self._get_table_stats(table.schema_name, table.name)
             table.row_count = stats.get("row_count", 0)
             table.total_space_kb = stats.get("total_space_kb", 0)
@@ -152,6 +159,7 @@ class TableExtractor(BaseExtractor):
 
     def _get_indexes(self, schema_name: str, table_name: str) -> list[Index]:
         """Get indexes for a table."""
+        # Get basic index info
         query = """
             SELECT
                 index_name,
@@ -165,17 +173,38 @@ class TableExtractor(BaseExtractor):
             ORDER BY index_name
         """
         rows = self.connection.execute_dict(query, (schema_name, table_name))
-        return [
-            Index(
-                name=row["index_name"],
-                columns=row["columns"].split(","),
-                is_unique=bool(row["is_unique"]),
-                is_primary_key=bool(row["is_primary_key"]),
-                is_clustered=row["index_name"] == "PRIMARY",
-                index_type=row["index_type"],
+
+        indexes = []
+        for row in rows:
+            # Try to get filter definition from SHOW CREATE TABLE (MySQL 8.0+)
+            filter_definition = None
+            try:
+                create_query = f"SHOW CREATE TABLE `{schema_name}`.`{table_name}`"
+                create_rows = self.connection.execute_dict(create_query)
+                if create_rows:
+                    create_sql = create_rows[0]["Create Table"]
+                    # Look for index definition with WHERE clause
+                    import re
+                    index_pattern = rf'INDEX\s+`{re.escape(row["index_name"])}`\s+.*?(WHERE\s+[^,\)]+)'
+                    match = re.search(index_pattern, create_sql, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        filter_definition = match.group(1)
+            except Exception:
+                # SHOW CREATE TABLE may not be available or index may not have filter
+                pass
+
+            indexes.append(
+                Index(
+                    name=row["index_name"],
+                    columns=row["columns"].split(","),
+                    is_unique=bool(row["is_unique"]),
+                    is_primary_key=bool(row["is_primary_key"]),
+                    is_clustered=False,  # MySQL doesn't have explicit clustered indexes like SQL Server
+                    index_type=row["index_type"].upper(),
+                    filter_definition=filter_definition,
+                )
             )
-            for row in rows
-        ]
+        return indexes
 
     def _get_check_constraints(self, schema_name: str, table_name: str) -> list[CheckConstraint]:
         """Get check constraints for a table (MySQL 8.0.16+)."""
@@ -195,6 +224,51 @@ class TableExtractor(BaseExtractor):
             return [CheckConstraint(name=row["constraint_name"], definition=row["definition"]) for row in rows]
         except Exception:
             return []  # Check constraints not supported in older MySQL
+
+    def _get_unique_constraints(self, schema_name: str, table_name: str) -> list[UniqueConstraint]:
+        """Get unique constraints for a table."""
+        query = """
+            SELECT
+                tc.constraint_name,
+                GROUP_CONCAT(kcu.column_name ORDER BY kcu.ordinal_position) AS columns
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            WHERE tc.constraint_type = 'UNIQUE'
+            AND tc.table_schema = %s AND tc.table_name = %s
+            GROUP BY tc.constraint_name
+        """
+        rows = self.connection.execute_dict(query, (schema_name, table_name))
+        return [UniqueConstraint(name=row["constraint_name"], columns=row["columns"].split(",")) for row in rows]
+
+    def _get_table_triggers(self, schema_name: str, table_name: str) -> list[Trigger]:
+        """Get triggers for a table."""
+        query = """
+            SELECT
+                trigger_name,
+                action_timing AS trigger_type,
+                event_manipulation AS event,
+                action_statement AS definition
+            FROM information_schema.triggers
+            WHERE event_object_schema = %s AND event_object_table = %s
+        """
+        rows = self.connection.execute_dict(query, (schema_name, table_name))
+        triggers = []
+
+        for row in rows:
+            triggers.append(
+                Trigger(
+                    schema_name=schema_name,
+                    name=row["trigger_name"],
+                    parent_table_schema=schema_name,
+                    parent_table_name=table_name,
+                    trigger_type=row["trigger_type"],
+                    events=[row["event"]],
+                    definition=row["definition"],
+                )
+            )
+        return triggers
 
     def _get_table_stats(self, schema_name: str, table_name: str) -> dict[str, Any]:
         """Get row count and space statistics."""
@@ -506,3 +580,197 @@ class TriggerExtractor(BaseExtractor):
                 )
             )
         return triggers
+
+
+class SecurityExtractor(BaseExtractor):
+    """Extracts security metadata from MySQL."""
+
+    def extract(self) -> dict:
+        """Extract all security metadata."""
+        users = self._extract_users()
+        logger.info(f"Found {len(users)} users")
+        roles = self._extract_roles()
+        logger.info(f"Found {len(roles)} roles")
+        permissions = self._extract_permissions()
+        logger.info(f"Found {len(permissions)} permissions")
+        memberships = self._extract_role_memberships()
+        logger.info(f"Found {len(memberships)} role memberships")
+
+        return {
+            "users": users,
+            "roles": roles,
+            "permissions": permissions,
+            "role_memberships": memberships,
+        }
+
+    def _extract_users(self) -> list[User]:
+        """Extract all database users."""
+        query = """
+            SELECT
+                u.user AS user_name,
+                u.host AS host,
+                u.plugin AS auth_plugin,
+                u.authentication_string IS NOT NULL AS has_password,
+                u.account_locked = 'Y' AS is_locked,
+                u.password_expired = 'Y' AS password_expired,
+                u.password_last_changed AS password_change_date
+            FROM mysql.user u
+            ORDER BY u.user, u.host
+        """
+        rows = self.connection.execute_dict(query)
+        return [
+            User(
+                name=f"{row['user_name']}@{row['host']}",
+                authentication_type=row["auth_plugin"] or "UNKNOWN",
+                is_disabled=bool(row["is_locked"]),
+                create_date=None,
+                modify_date=str(row["password_change_date"]) if row["password_change_date"] else None,
+            )
+            for row in rows
+        ]
+
+    def _extract_roles(self) -> list[Role]:
+        """Extract all database roles (MySQL 8.0+)."""
+        # MySQL roles are essentially users that cannot login
+        query = """
+            SELECT
+                u.user AS role_name,
+                u.host AS host,
+                CASE
+                    WHEN u.account_locked = 'Y' THEN 'DISABLED_ROLE'
+                    ELSE 'DATABASE_ROLE'
+                END AS role_type,
+                u.account_locked = 'Y' AS is_disabled
+            FROM mysql.user u
+            WHERE u.account_locked = 'Y' OR u.user LIKE 'mysql.%'
+            ORDER BY u.user, u.host
+        """
+        try:
+            rows = self.connection.execute_dict(query)
+            return [
+                Role(
+                    name=f"{row['role_name']}@{row['host']}",
+                    role_type=row["role_type"],
+                    is_disabled=bool(row["is_disabled"]),
+                    create_date=None,
+                    modify_date=None,
+                )
+                for row in rows
+            ]
+        except Exception:
+            # Older MySQL versions don't have roles
+            return []
+
+    def _extract_permissions(self) -> list[Permission]:
+        """Extract object-level permissions."""
+        permissions = []
+
+        # Extract table permissions from mysql.db and mysql.tables_priv
+        db_query = """
+            SELECT
+                db AS schema_name,
+                user AS grantee,
+                host AS grantee_host,
+                Select_priv = 'Y' AS can_select,
+                Insert_priv = 'Y' AS can_insert,
+                Update_priv = 'Y' AS can_update,
+                Delete_priv = 'Y' AS can_delete,
+                Create_priv = 'Y' AS can_create,
+                Drop_priv = 'Y' AS can_drop,
+                Grant_priv = 'Y' AS can_grant,
+                References_priv = 'Y' AS can_reference,
+                Index_priv = 'Y' AS can_index,
+                Alter_priv = 'Y' AS can_alter,
+                Create_tmp_table_priv = 'Y' AS can_create_tmp,
+                Lock_tables_priv = 'Y' AS can_lock
+            FROM mysql.db
+            ORDER BY db, user, host
+        """
+        db_rows = self.connection.execute_dict(db_query)
+        for row in db_rows:
+            grantee = f"{row['grantee']}@{row['grantee_host']}"
+            perms = [
+                ("SELECT", row["can_select"]),
+                ("INSERT", row["can_insert"]),
+                ("UPDATE", row["can_update"]),
+                ("DELETE", row["can_delete"]),
+                ("CREATE", row["can_create"]),
+                ("DROP", row["can_drop"]),
+                ("GRANT", row["can_grant"]),
+                ("REFERENCES", row["can_reference"]),
+                ("INDEX", row["can_index"]),
+                ("ALTER", row["can_alter"]),
+            ]
+            for perm_name, has_perm in perms:
+                if has_perm:
+                    permissions.append(Permission(
+                        grantee=grantee,
+                        grantee_type="USER",
+                        object_schema=row["schema_name"],
+                        object_name="",  # Database-level permission
+                        object_type="DATABASE",
+                        permission=perm_name,
+                        state="GRANT",
+                        grantor=None,
+                    ))
+
+        # Extract table-specific permissions
+        table_query = """
+            SELECT
+                tp.db AS schema_name,
+                tp.table_name AS object_name,
+                tp.user AS grantee,
+                tp.host AS grantee_host,
+                tp.table_priv AS table_privileges,
+                tp.column_priv AS column_privileges
+            FROM mysql.tables_priv tp
+            ORDER BY tp.db, tp.table_name, tp.user, tp.host
+        """
+        table_rows = self.connection.execute_dict(table_query)
+        for row in table_rows:
+            grantee = f"{row['grantee']}@{row['grantee_host']}"
+
+            # Parse table privileges (comma-separated)
+            if row["table_privileges"]:
+                priv_list = row["table_privileges"].split(',')
+                for priv in priv_list:
+                    priv = priv.strip()
+                    if priv:
+                        permissions.append(Permission(
+                            grantee=grantee,
+                            grantee_type="USER",
+                            object_schema=row["schema_name"],
+                            object_name=row["object_name"],
+                            object_type="TABLE",
+                            permission=priv.upper(),
+                            state="GRANT",
+                            grantor=None,
+                        ))
+
+        return permissions
+
+    def _extract_role_memberships(self) -> list[RoleMembership]:
+        """Extract role memberships (MySQL 8.0+)."""
+        # MySQL role memberships are stored in mysql.role_edges
+        query = """
+            SELECT
+                from_user AS member_name,
+                from_host AS member_host,
+                to_user AS role_name,
+                to_host AS role_host
+            FROM mysql.role_edges
+            ORDER BY to_user, to_host, from_user, from_host
+        """
+        try:
+            rows = self.connection.execute_dict(query)
+            return [
+                RoleMembership(
+                    member_name=f"{row['member_name']}@{row['member_host']}",
+                    role_name=f"{row['role_name']}@{row['role_host']}",
+                    member_type="USER",
+                )
+                for row in rows
+            ]
+        except Exception:
+            # Older MySQL versions don't have role_edges table
+            return []

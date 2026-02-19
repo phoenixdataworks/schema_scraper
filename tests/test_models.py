@@ -1,7 +1,19 @@
 """Tests for data models."""
 
 import pytest
-from schema_scraper.base.models import Column, FunctionColumn, Parameter, TypeColumn
+from schema_scraper.base.models import (
+    Column,
+    FunctionColumn,
+    Parameter,
+    Partition,
+    PartitionScheme,
+    Permission,
+    Role,
+    RoleMembership,
+    TablePartitioning,
+    TypeColumn,
+    User,
+)
 
 
 class TestColumn:
@@ -102,3 +114,141 @@ class TestTypeColumn:
         """Should format type column type."""
         col = TypeColumn(name="test", data_type="varchar", max_length=50)
         assert col.full_type == "varchar(50)"
+
+
+class TestPartition:
+    """Tests for Partition model."""
+
+    def test_partition_creation(self):
+        """Should create partition with basic properties."""
+        partition = Partition(
+            partition_number=1,
+            boundary_value="2023-01-01",
+            filegroup_name="PRIMARY",
+            row_count=1000,
+        )
+        assert partition.partition_number == 1
+        assert partition.boundary_value == "2023-01-01"
+        assert partition.filegroup_name == "PRIMARY"
+        assert partition.row_count == 1000
+        assert partition.data_compression is None
+        assert partition.is_readonly is False
+
+
+class TestPartitionScheme:
+    """Tests for PartitionScheme model."""
+
+    def test_partition_scheme_creation(self):
+        """Should create partition scheme with partitions."""
+        partitions = [
+            Partition(partition_number=1, boundary_value="2023-01-01"),
+            Partition(partition_number=2, boundary_value="2023-07-01"),
+        ]
+        scheme = PartitionScheme(
+            name="monthly_partition",
+            partition_column="created_date",
+            partition_type="RANGE",
+            boundary_type="LEFT",
+            partitions=partitions,
+        )
+        assert scheme.name == "monthly_partition"
+        assert scheme.partition_column == "created_date"
+        assert scheme.partition_type == "RANGE"
+        assert scheme.boundary_type == "LEFT"
+        assert len(scheme.partitions) == 2
+
+
+class TestTablePartitioning:
+    """Tests for TablePartitioning model."""
+
+    def test_partitioned_table(self):
+        """Should create partitioned table info."""
+        scheme = PartitionScheme(
+            name="test_scheme",
+            partition_column="id",
+            partition_type="RANGE",
+        )
+        partitioning = TablePartitioning(
+            partition_scheme=scheme,
+            is_partitioned=True,
+        )
+        assert partitioning.is_partitioned is True
+        assert partitioning.partition_scheme is not None
+
+    def test_non_partitioned_table(self):
+        """Should create non-partitioned table info."""
+        partitioning = TablePartitioning(is_partitioned=False)
+        assert partitioning.is_partitioned is False
+        assert partitioning.partition_scheme is None
+
+
+class TestUser:
+    """Tests for User model."""
+
+    def test_user_creation(self):
+        """Should create user with authentication info."""
+        user = User(
+            name="testuser",
+            authentication_type="PASSWORD",
+            is_disabled=False,
+            default_schema="dbo",
+        )
+        assert user.name == "testuser"
+        assert user.authentication_type == "PASSWORD"
+        assert user.is_disabled is False
+        assert user.default_schema == "dbo"
+
+
+class TestRole:
+    """Tests for Role model."""
+
+    def test_role_creation(self):
+        """Should create role with permissions."""
+        role = Role(
+            name="db_reader",
+            role_type="DATABASE_ROLE",
+            is_disabled=False,
+        )
+        assert role.name == "db_reader"
+        assert role.role_type == "DATABASE_ROLE"
+        assert role.is_disabled is False
+
+
+class TestPermission:
+    """Tests for Permission model."""
+
+    def test_permission_creation(self):
+        """Should create permission grant."""
+        permission = Permission(
+            grantee="testuser",
+            grantee_type="USER",
+            object_schema="dbo",
+            object_name="users",
+            object_type="TABLE",
+            permission="SELECT",
+            state="GRANT",
+            grantor="dbo",
+        )
+        assert permission.grantee == "testuser"
+        assert permission.grantee_type == "USER"
+        assert permission.object_schema == "dbo"
+        assert permission.object_name == "users"
+        assert permission.object_type == "TABLE"
+        assert permission.permission == "SELECT"
+        assert permission.state == "GRANT"
+        assert permission.grantor == "dbo"
+
+
+class TestRoleMembership:
+    """Tests for RoleMembership model."""
+
+    def test_role_membership_creation(self):
+        """Should create user-role relationship."""
+        membership = RoleMembership(
+            member_name="testuser",
+            role_name="db_reader",
+            member_type="USER",
+        )
+        assert membership.member_name == "testuser"
+        assert membership.role_name == "db_reader"
+        assert membership.member_type == "USER"

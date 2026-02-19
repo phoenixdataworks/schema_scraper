@@ -12,13 +12,17 @@ from ...base.models import (
     FunctionColumn,
     Index,
     Parameter,
+    Partition,
+    PartitionScheme,
     PrimaryKey,
     Procedure,
     Sequence,
     Synonym,
     Table,
+    TablePartitioning,
     Trigger,
     TypeColumn,
+    UniqueConstraint,
     UserDefinedType,
     View,
 )
@@ -40,6 +44,9 @@ class TableExtractor(BaseExtractor):
             table.foreign_keys = self._get_foreign_keys(table.schema_name, table.name)
             table.indexes = self._get_indexes(table.schema_name, table.name)
             table.check_constraints = self._get_check_constraints(table.schema_name, table.name)
+            table.unique_constraints = self._get_unique_constraints(table.schema_name, table.name)
+            table.triggers = self._get_table_triggers(table.schema_name, table.name)
+            table.partitioning = self._get_partitioning(table.schema_name, table.name)
             table.description = self._get_description(table.schema_name, table.name)
             stats = self._get_table_stats(table.schema_name, table.name)
             table.row_count = stats.get("row_count", 0)
@@ -78,6 +85,7 @@ class TableExtractor(BaseExtractor):
                 c.data_default AS default_value,
                 c.column_id AS ordinal_position,
                 CASE WHEN c.identity_column = 'YES' THEN 1 ELSE 0 END AS is_identity,
+                CASE WHEN c.virtual_column = 'YES' THEN 1 ELSE 0 END AS is_virtual,
                 cc.comments AS description
             FROM all_tab_columns c
             LEFT JOIN all_col_comments cc
@@ -94,8 +102,10 @@ class TableExtractor(BaseExtractor):
                 precision=row["precision"],
                 scale=row["scale"],
                 is_nullable=bool(row["is_nullable"]),
-                default_value=str(row["default_value"]).strip() if row["default_value"] else None,
+                default_value=str(row["default_value"]).strip() if row["default_value"] and not row["is_virtual"] else None,
                 is_identity=bool(row["is_identity"]),
+                is_computed=bool(row["is_virtual"]),
+                computed_definition=str(row["default_value"]).strip() if row["is_virtual"] and row["default_value"] else None,
                 ordinal_position=row["ordinal_position"],
                 description=row["description"],
             )
@@ -200,6 +210,19 @@ class TableExtractor(BaseExtractor):
                 ORDER BY column_position
             """
             col_rows = self.connection.execute_dict(col_query, (schema_name, idx_row["index_name"]))
+
+            # Get filter definition if any
+            filter_query = """
+                SELECT index_type FROM all_indexes
+                WHERE owner = :1 AND index_name = :2 AND index_type LIKE '%FUNCTION-BASED%'
+            """
+            filter_rows = self.connection.execute_dict(filter_query, (schema_name, idx_row["index_name"]))
+            filter_definition = None
+            if filter_rows:
+                # For function-based indexes, we could potentially extract the expression
+                # but it's complex to parse. For now, we'll just indicate it's function-based
+                filter_definition = "FUNCTION-BASED INDEX"
+
             indexes.append(
                 Index(
                     name=idx_row["index_name"],
@@ -207,6 +230,7 @@ class TableExtractor(BaseExtractor):
                     is_unique=bool(idx_row["is_unique"]),
                     is_primary_key=bool(idx_row["is_primary_key"]),
                     index_type=idx_row["index_type"],
+                    filter_definition=filter_definition,
                 )
             )
         return indexes
@@ -228,6 +252,160 @@ class TableExtractor(BaseExtractor):
             )
             for row in rows
         ]
+
+    def _get_unique_constraints(self, schema_name: str, table_name: str) -> list[UniqueConstraint]:
+        """Get unique constraints for a table."""
+        query = """
+            SELECT constraint_name
+            FROM all_constraints
+            WHERE owner = :1 AND table_name = :2 AND constraint_type = 'U'
+        """
+        constraint_rows = self.connection.execute_dict(query, (schema_name, table_name))
+        unique_constraints = []
+
+        for constraint_row in constraint_rows:
+            col_query = """
+                SELECT column_name
+                FROM all_cons_columns
+                WHERE owner = :1 AND constraint_name = :2
+                ORDER BY position
+            """
+            col_rows = self.connection.execute_dict(col_query, (schema_name, constraint_row["constraint_name"]))
+            unique_constraints.append(
+                UniqueConstraint(
+                    name=constraint_row["constraint_name"],
+                    columns=[row["column_name"] for row in col_rows],
+                )
+            )
+        return unique_constraints
+
+    def _get_partitioning(self, schema_name: str, table_name: str) -> Optional[TablePartitioning]:
+        """Get partitioning information for a table."""
+        # Check if table is partitioned
+        partition_query = """
+            SELECT partitioning_type, partition_count, partitioning_key_count
+            FROM all_part_tables
+            WHERE owner = :1 AND table_name = :2
+        """
+
+        partition_rows = self.connection.execute_dict(partition_query, (schema_name, table_name))
+        if not partition_rows:
+            return TablePartitioning(is_partitioned=False)
+
+        row = partition_rows[0]
+
+        # Get partition key columns
+        key_query = """
+            SELECT column_name
+            FROM all_part_key_columns
+            WHERE owner = :1 AND name = :2
+            ORDER BY column_position
+        """
+        key_rows = self.connection.execute_dict(key_query, (schema_name, table_name))
+        partition_column = ", ".join([row["column_name"] for row in key_rows])
+
+        # Get partition details
+        partitions_query = """
+            SELECT
+                partition_name,
+                partition_position,
+                high_value,
+                tablespace_name,
+                num_rows
+            FROM all_tab_partitions
+            WHERE table_owner = :1 AND table_name = :2
+            ORDER BY partition_position
+        """
+        partitions_rows = self.connection.execute_dict(partitions_query, (schema_name, table_name))
+
+        partitions = []
+        for part_row in partitions_rows:
+            partitions.append(Partition(
+                partition_number=part_row["partition_position"],
+                boundary_value=str(part_row["high_value"]) if part_row["high_value"] else None,
+                tablespace_name=part_row["tablespace_name"],
+                row_count=part_row["num_rows"] or 0,
+            ))
+
+        # Get subpartitions if this is composite partitioning
+        subpartitions_query = """
+            SELECT
+                partition_name,
+                subpartition_name,
+                subpartition_position,
+                high_value,
+                tablespace_name,
+                num_rows
+            FROM all_tab_subpartitions
+            WHERE table_owner = :1 AND table_name = :2
+            ORDER BY partition_name, subpartition_position
+        """
+        subpartitions_rows = self.connection.execute_dict(subpartitions_query, (schema_name, table_name))
+
+        # Add subpartitions as additional partitions
+        for subpart_row in subpartitions_rows:
+            partitions.append(Partition(
+                partition_number=len(partitions) + 1,
+                boundary_value=f"{subpart_row['partition_name']}: {subpart_row['high_value']}",
+                tablespace_name=subpart_row["tablespace_name"],
+                row_count=subpart_row["num_rows"] or 0,
+            ))
+
+        partition_scheme = PartitionScheme(
+            name=f"{table_name}_partitioning",
+            partition_column=partition_column,
+            partition_type=row["partitioning_type"],
+            partitions=partitions,
+        )
+
+        return TablePartitioning(
+            partition_scheme=partition_scheme,
+            is_partitioned=True,
+        )
+
+    def _get_table_triggers(self, schema_name: str, table_name: str) -> list[Trigger]:
+        """Get triggers for a table."""
+        query = """
+            SELECT
+                trigger_name,
+                trigger_type,
+                triggering_event AS events,
+                trigger_body AS definition,
+                status = 'DISABLED' AS is_disabled
+            FROM all_triggers
+            WHERE table_owner = :1 AND table_name = :2
+        """
+        rows = self.connection.execute_dict(query, (schema_name, table_name))
+        triggers = []
+
+        for row in rows:
+            # Parse trigger type
+            trigger_type = row["trigger_type"]
+            if "BEFORE" in trigger_type.upper():
+                timing = "BEFORE"
+            elif "AFTER" in trigger_type.upper():
+                timing = "AFTER"
+            elif "INSTEAD OF" in trigger_type.upper():
+                timing = "INSTEAD OF"
+            else:
+                timing = trigger_type
+
+            # Parse events
+            events = [e.strip() for e in row["events"].upper().split(" OR ")]
+
+            triggers.append(
+                Trigger(
+                    schema_name=schema_name,
+                    name=row["trigger_name"],
+                    parent_table_schema=schema_name,
+                    parent_table_name=table_name,
+                    trigger_type=timing,
+                    events=events,
+                    definition=row["definition"],
+                    is_disabled=bool(row["is_disabled"]),
+                )
+            )
+        return triggers
 
     def _get_description(self, schema_name: str, table_name: str) -> Optional[str]:
         """Get table description."""
