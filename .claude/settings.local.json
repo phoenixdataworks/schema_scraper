@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tail:*)",
+      "Bash(cd:*)",
+      "Bash(cd /c/Users/bobby.lansing/schema_scraper && set -a && source .env && set +a && python -m schema_scraper scrape -t snowflake -d HH_ANALYTICS --schemas DEV -vv 2>&1)",
+      "Bash(conda env:*)",
+      "Bash(/c/Users/bobby.lansing/miniconda3/python.exe --version && /c/Users/bobby.lansing/miniconda3/python.exe -c \"import snowflake.connector; print\\('connector ok'\\)\" 2>&1)",
+      "Bash(ls:*)",
+      "Bash(PYEXE=/c/Users/bobby.lansing/miniconda3/envs/snowflake/python.exe && $PYEXE -c \"import snowflake.connector; print\\('connector:', snowflake.connector.__version__\\)\" && $PYEXE -c \"import click; print\\('click:', click.__version__\\)\" 2>&1)",
+      "Bash(/c/Users/bobby.lansing/miniconda3/envs/snowflake/python.exe:*)",
+      "Bash(cd /c/Users/bobby.lansing/schema_scraper && set -a && source .env && set +a && /c/Users/bobby.lansing/miniconda3/envs/snowflake/python.exe -m schema_scraper scrape -t snowflake -d HH_ANALYTICS --schemas DEV -vv 2>&1)"
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 """Click CLI interface for the schema scraper."""
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def setup_logging(verbosity: int) -> None:
 def cli():
     """Schema Scraper - Extract database schema to markdown documentation.
 
-    Supports: MS SQL Server, PostgreSQL, MySQL, Oracle, SQLite
+    Supports: MS SQL Server, PostgreSQL, MySQL, Oracle, SQLite, Snowflake
     """
     pass
 
@@ -59,6 +60,11 @@ def cli():
 @click.option("--driver", help="ODBC driver name (MSSQL only)")
 @click.option("--service-name", help="Oracle service name")
 @click.option("--sid", help="Oracle SID")
+@click.option("--account", envvar="SNOWFLAKE_ACCOUNT", help="Snowflake account identifier")
+@click.option("--warehouse", envvar="SNOWFLAKE_WAREHOUSE", help="Snowflake warehouse")
+@click.option("--role", envvar="SNOWFLAKE_ROLE", help="Snowflake role")
+@click.option("--private-key-path", envvar="SNOWFLAKE_PRIVATE_KEY_PATH",
+              help="Path to Snowflake private key file (.p8)")
 @click.option("-o", "--output", default="./schema_docs", type=click.Path(),
               help="Output base directory (database name will be appended)")
 @click.option("--schemas", multiple=True, help="Include only specific schemas")
@@ -82,6 +88,10 @@ def scrape(
     driver: str | None,
     service_name: str | None,
     sid: str | None,
+    account: str | None,
+    warehouse: str | None,
+    role: str | None,
+    private_key_path: str | None,
     output: str,
     schemas: tuple[str, ...],
     exclude_schemas: tuple[str, ...],
@@ -94,6 +104,11 @@ def scrape(
     logger = logging.getLogger(__name__)
 
     try:
+        # Snowflake env var fallbacks
+        if db_type.lower() == "snowflake":
+            username = username or os.environ.get("SNOWFLAKE_USER")
+            database = database or os.environ.get("SNOWFLAKE_DATABASE")
+
         # Determine database name for output folder
         if db_type.lower() == "sqlite" and database:
             # For SQLite, use the filename without extension
@@ -121,6 +136,10 @@ def scrape(
             driver=driver,
             service_name=service_name,
             sid=sid,
+            snowflake_account=account,
+            snowflake_warehouse=warehouse,
+            snowflake_role=role,
+            snowflake_private_key_path=private_key_path,
             output_dir=output_dir,
             include_schemas=list(schemas),
             exclude_schemas=list(exclude_schemas) if exclude_schemas else [],
@@ -254,6 +273,14 @@ def drivers(db_type: str | None) -> None:
         import sqlite3
         click.echo(f"  sqlite3 version: {sqlite3.sqlite_version}")
 
+    if db_type is None or db_type.lower() == "snowflake":
+        click.echo("\nSnowflake:")
+        try:
+            import snowflake.connector
+            click.echo(f"  snowflake-connector-python version: {snowflake.connector.__version__}")
+        except ImportError:
+            click.echo("  snowflake-connector-python not installed")
+
 
 @cli.command("test-connection")
 @click.option("--db-type", "-t", type=click.Choice(SUPPORTED_BACKENDS, case_sensitive=False),
@@ -269,6 +296,11 @@ def drivers(db_type: str | None) -> None:
 @click.option("--driver", help="ODBC driver name (MSSQL only)")
 @click.option("--service-name", help="Oracle service name")
 @click.option("--sid", help="Oracle SID")
+@click.option("--account", envvar="SNOWFLAKE_ACCOUNT", help="Snowflake account identifier")
+@click.option("--warehouse", envvar="SNOWFLAKE_WAREHOUSE", help="Snowflake warehouse")
+@click.option("--role", envvar="SNOWFLAKE_ROLE", help="Snowflake role")
+@click.option("--private-key-path", envvar="SNOWFLAKE_PRIVATE_KEY_PATH",
+              help="Path to Snowflake private key file (.p8)")
 def test_connection(
     db_type: str,
     host: str | None,
@@ -281,9 +313,18 @@ def test_connection(
     driver: str | None,
     service_name: str | None,
     sid: str | None,
+    account: str | None,
+    warehouse: str | None,
+    role: str | None,
+    private_key_path: str | None,
 ) -> None:
     """Test database connection."""
     try:
+        # Snowflake env var fallbacks
+        if db_type.lower() == "snowflake":
+            username = username or os.environ.get("SNOWFLAKE_USER")
+            database = database or os.environ.get("SNOWFLAKE_DATABASE")
+
         config = ScraperConfig(
             db_type=db_type.lower(),
             host=host,
@@ -297,6 +338,10 @@ def test_connection(
             driver=driver,
             service_name=service_name,
             sid=sid,
+            snowflake_account=account,
+            snowflake_warehouse=warehouse,
+            snowflake_role=role,
+            snowflake_private_key_path=private_key_path,
         )
         config.validate()
 

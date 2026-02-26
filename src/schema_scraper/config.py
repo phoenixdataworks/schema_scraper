@@ -33,6 +33,12 @@ class ScraperConfig:
     service_name: Optional[str] = None
     sid: Optional[str] = None
 
+    # Snowflake specific
+    snowflake_account: Optional[str] = None
+    snowflake_warehouse: Optional[str] = None
+    snowflake_role: Optional[str] = None
+    snowflake_private_key_path: Optional[str] = None
+
     # Output settings
     output_dir: Path = field(default_factory=lambda: Path("./schema_docs"))
 
@@ -80,6 +86,7 @@ class ScraperConfig:
                       "APPQOSSYS", "WMSYS", "EXFSYS", "CTXSYS", "XDB", "ORDDATA",
                       "ORDSYS", "MDSYS", "OLAPSYS", "ANONYMOUS", "FLOWS_FILES"],
             "sqlite": [],
+            "snowflake": ["INFORMATION_SCHEMA"],
         }
         return defaults.get(self.db_type, [])
 
@@ -98,6 +105,19 @@ class ScraperConfig:
         if self.db_type == "sqlite":
             if not self.database_path and not self.database:
                 raise ConfigurationError("Database path is required for SQLite")
+            return
+
+        if self.db_type == "snowflake":
+            if not self.snowflake_account:
+                raise ConfigurationError("Account is required for Snowflake")
+            if not self.username:
+                raise ConfigurationError("Username is required for Snowflake")
+            if not self.database:
+                raise ConfigurationError("Database is required for Snowflake")
+            if not self.snowflake_private_key_path and not self.password:
+                raise ConfigurationError(
+                    "Either private_key_path or password is required for Snowflake"
+                )
             return
 
         if self.db_type == "mssql" and self.connection_string:

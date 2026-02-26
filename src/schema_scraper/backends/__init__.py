@@ -60,8 +60,19 @@ def get_backend(db_type: str) -> tuple[Type["BaseConnection"], dict]:
         from .sqlite import SQLiteConnection, get_extractors
         return SQLiteConnection, get_extractors()
 
+    elif db_type == "snowflake":
+        try:
+            from .snowflake import SnowflakeConnection, get_extractors
+            return SnowflakeConnection, get_extractors()
+        except ImportError as e:
+            raise BackendNotAvailableError(
+                f"Snowflake backend requires snowflake-connector-python. "
+                f"Install with: pip install schema-scraper[snowflake]\n"
+                f"Error: {e}"
+            )
+
     else:
         raise ConfigurationError(
             f"Unknown database type: {db_type}. "
-            f"Supported types: mssql, postgresql, mysql, oracle, sqlite"
+            f"Supported types: mssql, postgresql, mysql, oracle, sqlite, snowflake"
         )
