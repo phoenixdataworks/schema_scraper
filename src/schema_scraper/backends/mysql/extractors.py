@@ -4,6 +4,7 @@ import logging
 from typing import Any, Optional
 
 from ...base import BaseExtractor
+from ...dependencies import apply_dependencies, get_inferred_dependencies
 from ...base.models import (
     CheckConstraint,
     Column,
@@ -323,6 +324,8 @@ class ViewExtractor(BaseExtractor):
         for view in views:
             view.columns = self._get_columns(view.schema_name, view.name)
             view.definition = self._get_definition(view.schema_name, view.name)
+            reads, writes, executes = get_inferred_dependencies(view.definition, view.schema_name)
+            apply_dependencies(view, reads, writes, executes)
 
         return views
 
@@ -391,6 +394,8 @@ class ProcedureExtractor(BaseExtractor):
         for proc in procedures:
             proc.parameters = self._get_parameters(proc.schema_name, proc.name)
             proc.definition = self._get_definition(proc.schema_name, proc.name)
+            reads, writes, executes = get_inferred_dependencies(proc.definition, proc.schema_name)
+            apply_dependencies(proc, reads, writes, executes)
 
         return procedures
 
@@ -469,6 +474,8 @@ class FunctionExtractor(BaseExtractor):
         for func in functions:
             func.parameters = self._get_parameters(func.schema_name, func.name)
             func.definition = self._get_definition(func.schema_name, func.name)
+            reads, writes, executes = get_inferred_dependencies(func.definition, func.schema_name)
+            apply_dependencies(func, reads, writes, executes)
 
         return functions
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from ..base.models import (
     Database,
     Function,
+    ObjectReference,
     Procedure,
     Schema,
     Sequence,
@@ -71,6 +72,51 @@ class MarkdownGenerator:
         ]
         for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
+
+    def _object_type_dir(self, object_type: str) -> str:
+        """Map object type to documentation subdirectory."""
+        mapping = {
+            "table": "tables",
+            "view": "views",
+            "procedure": "procedures",
+            "function": "functions",
+            "synonym": "synonyms",
+        }
+        return mapping.get(object_type, "tables")
+
+    def _object_link(self, schema_name: str, object_name: str, object_type: str, from_dir: str) -> str:
+        """Create a markdown link to another object doc."""
+        target_dir = self._object_type_dir(object_type)
+        rel = ".." if from_dir != target_dir else "."
+        return f"[{schema_name}.{object_name}]({rel}/{target_dir}/{schema_name}.{object_name}.md)"
+
+    def _format_object_references(
+        self,
+        refs: list[ObjectReference],
+        from_dir: str,
+    ) -> list[str]:
+        """Format dependency references as a bullet list."""
+        lines: list[str] = []
+        for ref in refs:
+            source_note = " *(inferred)*" if ref.source == "inferred" else ""
+            lines.append(
+                f"- {self._object_link(ref.schema_name, ref.object_name, ref.object_type, from_dir)} "
+                f"({ref.object_type}, {ref.access}){source_note}"
+            )
+        return lines
+
+    def _format_used_by(
+        self,
+        used_by: list[tuple[str, str, str]],
+        from_dir: str,
+    ) -> list[str]:
+        """Format reverse dependency references as a bullet list."""
+        lines: list[str] = []
+        for schema_name, object_name, object_type in used_by:
+            lines.append(
+                f"- {self._object_link(schema_name, object_name, object_type, from_dir)} ({object_type})"
+            )
+        return lines
 
     def _write_file(self, path: Path, content: str) -> Path:
         """Write content to a file."""
@@ -246,7 +292,7 @@ class MarkdownGenerator:
             for cc in table.check_constraints:
                 lines.extend([f"### {cc.name}", "", "```sql", cc.definition, "```", ""])
 
-        if table.foreign_keys or table.referenced_by:
+        if table.foreign_keys or table.referenced_by or table.used_by:
             lines.extend(["## Relationships", ""])
             if table.foreign_keys:
                 lines.append("### References (this table → other tables)")
@@ -259,6 +305,11 @@ class MarkdownGenerator:
                 lines.append("")
                 for ref_schema, ref_table, fk_name in table.referenced_by:
                     lines.append(f"- ← [{ref_schema}.{ref_table}](../{ref_schema}.{ref_table}.md) via `{fk_name}`")
+                lines.append("")
+            if table.used_by:
+                lines.append("### Used By (views, procedures, functions)")
+                lines.append("")
+                lines.extend(self._format_used_by(table.used_by, "tables"))
                 lines.append("")
 
         return self._write_file(
@@ -302,9 +353,20 @@ class MarkdownGenerator:
         if view.is_materialized:
             lines.extend(["*This is a materialized view.*", ""])
 
+        lines.append("")
+
+        if view.reads_from:
+            lines.extend(["## Inputs", "", "### Reads From", ""])
+            lines.extend(self._format_object_references(view.reads_from, "views"))
+            lines.append("")
+        elif view.base_tables:
+            lines.extend(["## Inputs", "", "### Reads From", ""])
+            for bt in view.base_tables:
+                lines.append(f"- {bt}")
+            lines.append("")
+
+        lines.extend(["## Outputs", "", "### Columns", ""])
         lines.extend([
-            "## Columns",
-            "",
             "| Column | Type | Nullable | Description |",
             "|--------|------|----------|-------------|",
         ])
@@ -314,10 +376,9 @@ class MarkdownGenerator:
             lines.append(f"| {col.name} | {col.full_type} | {nullable} | {desc} |")
         lines.append("")
 
-        if view.base_tables:
-            lines.extend(["## Base Tables", ""])
-            for bt in view.base_tables:
-                lines.append(f"- {bt}")
+        if view.used_by:
+            lines.extend(["## Used By", ""])
+            lines.extend(self._format_used_by(view.used_by, "views"))
             lines.append("")
 
         if view.definition:
@@ -361,19 +422,63 @@ class MarkdownGenerator:
         if proc.description:
             lines.extend([proc.description, ""])
 
-        if proc.parameters:
+        lines.append("")
+
+        input_params = [p for p in proc.parameters if not p.is_output]
+        output_params = [p for p in proc.parameters if p.is_output]
+
+        if input_params or proc.reads_from:
+            lines.extend(["## Inputs", ""])
+
+        if input_params:
             lines.extend([
-                "## Parameters",
+                "### Parameters",
                 "",
-                "| Name | Type | Direction | Default |",
-                "|------|------|-----------|---------|",
+                "| Name | Type | Default |",
+                "|------|------|---------|",
             ])
-            for param in proc.parameters:
-                direction = "OUTPUT" if param.is_output else "INPUT"
+            for param in input_params:
                 default = param.default_value if param.has_default else ""
-                lines.append(f"| {param.name} | {param.full_type} | {direction} | {default} |")
+                lines.append(f"| {param.name} | {param.full_type} | {default} |")
             lines.append("")
-        else:
+
+        if proc.reads_from:
+            lines.extend(["### Reads From", ""])
+            lines.extend(self._format_object_references(proc.reads_from, "procedures"))
+            lines.append("")
+
+        if output_params or proc.writes_to:
+            lines.extend(["## Outputs", ""])
+
+        if output_params:
+            lines.extend([
+                "### Parameters",
+                "",
+                "| Name | Type |",
+                "|------|------|",
+            ])
+            for param in output_params:
+                lines.append(f"| {param.name} | {param.full_type} |")
+            lines.append("")
+
+        if proc.writes_to:
+            lines.extend(["### Writes To", ""])
+            lines.extend(self._format_object_references(proc.writes_to, "procedures"))
+            lines.append("")
+
+        if proc.executes:
+            lines.extend(["## Executes", ""])
+            lines.extend(self._format_object_references(proc.executes, "procedures"))
+            lines.append("")
+
+        if proc.used_by:
+            lines.extend(["## Used By", ""])
+            lines.extend(self._format_used_by(proc.used_by, "procedures"))
+            lines.append("")
+
+        if proc.parameters and not input_params and not output_params:
+            lines.extend(["*No parameters*", ""])
+        elif not proc.parameters and not proc.reads_from and not proc.writes_to and not proc.executes:
             lines.extend(["*No parameters*", ""])
 
         if proc.definition:
@@ -425,23 +530,36 @@ class MarkdownGenerator:
         if func.description:
             lines.extend([func.description, ""])
 
-        if func.parameters:
+        input_params = [p for p in func.parameters if not p.is_output]
+        if input_params:
             lines.extend([
-                "## Parameters",
+                "## Inputs",
+                "",
+                "### Parameters",
                 "",
                 "| Name | Type | Default |",
                 "|------|------|---------|",
             ])
-            for param in func.parameters:
+            for param in input_params:
                 default = param.default_value if param.has_default else ""
                 lines.append(f"| {param.name} | {param.full_type} | {default} |")
             lines.append("")
 
+        if func.reads_from:
+            if not input_params:
+                lines.extend(["## Inputs", ""])
+            lines.extend(["### Reads From", ""])
+            lines.extend(self._format_object_references(func.reads_from, "functions"))
+            lines.append("")
+
+        if func.return_type or func.return_columns or func.writes_to:
+            lines.extend(["## Outputs", ""])
+
         if func.function_type == "SCALAR" and func.return_type:
-            lines.extend(["## Returns", "", f"`{func.return_type}`", ""])
+            lines.extend(["### Return Type", "", f"`{func.return_type}`", ""])
         elif func.return_columns:
             lines.extend([
-                "## Return Columns",
+                "### Return Columns",
                 "",
                 "| Column | Type | Nullable |",
                 "|--------|------|----------|",
@@ -449,6 +567,21 @@ class MarkdownGenerator:
             for col in func.return_columns:
                 nullable = "YES" if col.is_nullable else "NO"
                 lines.append(f"| {col.name} | {col.full_type} | {nullable} |")
+            lines.append("")
+
+        if func.writes_to:
+            lines.extend(["### Writes To", ""])
+            lines.extend(self._format_object_references(func.writes_to, "functions"))
+            lines.append("")
+
+        if func.executes:
+            lines.extend(["## Executes", ""])
+            lines.extend(self._format_object_references(func.executes, "functions"))
+            lines.append("")
+
+        if func.used_by:
+            lines.extend(["## Used By", ""])
+            lines.extend(self._format_used_by(func.used_by, "functions"))
             lines.append("")
 
         if func.definition:

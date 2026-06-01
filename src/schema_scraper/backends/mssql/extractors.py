@@ -5,6 +5,7 @@ import re
 from typing import Any, Optional
 
 from ...base import BaseExtractor
+from ...dependencies import apply_dependencies, get_mssql_dependencies
 from ...base.models import (
     CheckConstraint,
     Column,
@@ -536,7 +537,10 @@ class ViewExtractor(MSSQLBaseExtractor):
             view.columns = self._get_columns(view.schema_name, view.name)
             view.definition = self._get_definition(view.schema_name, view.name)
             view.description = self.get_extended_property(view.schema_name, view.name)
-            view.base_tables = self._get_base_tables(view.schema_name, view.name)
+            reads, writes, executes = get_mssql_dependencies(
+                self.connection, view.schema_name, view.name, view.definition
+            )
+            apply_dependencies(view, reads, writes, executes)
 
         return views
 
@@ -597,20 +601,6 @@ class ViewExtractor(MSSQLBaseExtractor):
         """
         return self.connection.execute_scalar(query, (schema_name, view_name))
 
-    def _get_base_tables(self, schema_name: str, view_name: str) -> list[str]:
-        """Get the base tables referenced by a view."""
-        query = """
-            SELECT DISTINCT SCHEMA_NAME(o.schema_id) + '.' + o.name AS table_name
-            FROM sys.sql_expression_dependencies d
-            JOIN sys.views v ON d.referencing_id = v.object_id
-            JOIN sys.schemas s ON v.schema_id = s.schema_id
-            JOIN sys.objects o ON d.referenced_id = o.object_id
-            WHERE s.name = ? AND v.name = ? AND o.type IN ('U', 'V')
-            ORDER BY table_name
-        """
-        rows = self.connection.execute_dict(query, (schema_name, view_name))
-        return [row["table_name"] for row in rows]
-
 
 class ProcedureExtractor(MSSQLBaseExtractor):
     """Extracts stored procedure metadata from SQL Server."""
@@ -624,6 +614,10 @@ class ProcedureExtractor(MSSQLBaseExtractor):
             proc.parameters = self._get_parameters(proc.schema_name, proc.name)
             proc.definition = self._get_definition(proc.schema_name, proc.name)
             proc.description = self.get_extended_property(proc.schema_name, proc.name)
+            reads, writes, executes = get_mssql_dependencies(
+                self.connection, proc.schema_name, proc.name, proc.definition
+            )
+            apply_dependencies(proc, reads, writes, executes)
 
         return procedures
 
@@ -702,6 +696,10 @@ class FunctionExtractor(MSSQLBaseExtractor):
                 func.return_type = self._get_return_type(func.schema_name, func.name)
             else:
                 func.return_columns = self._get_return_columns(func.schema_name, func.name)
+            reads, writes, executes = get_mssql_dependencies(
+                self.connection, func.schema_name, func.name, func.definition
+            )
+            apply_dependencies(func, reads, writes, executes)
 
         return functions
 

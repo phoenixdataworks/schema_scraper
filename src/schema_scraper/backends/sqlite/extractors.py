@@ -5,6 +5,7 @@ import re
 from typing import Any, Optional
 
 from ...base import BaseExtractor
+from ...dependencies import apply_dependencies, get_inferred_dependencies
 from ...base.models import (
     Column,
     ForeignKey,
@@ -277,6 +278,8 @@ class ViewExtractor(BaseExtractor):
         for view in views:
             view.columns = self._get_columns(view.name)
             view.definition = self._get_definition(view.name)
+            reads, writes, executes = get_inferred_dependencies(view.definition, view.schema_name)
+            apply_dependencies(view, reads, writes, executes)
 
         return views
 

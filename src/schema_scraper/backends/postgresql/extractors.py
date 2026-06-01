@@ -4,6 +4,7 @@ import logging
 from typing import Any, Optional
 
 from ...base import BaseExtractor
+from ...dependencies import apply_dependencies, get_postgresql_dependencies
 from ...base.models import (
     CheckConstraint,
     Column,
@@ -347,6 +348,10 @@ class ViewExtractor(BaseExtractor):
             view.columns = self._get_columns(view.schema_name, view.name)
             view.definition = self._get_definition(view.schema_name, view.name)
             view.description = self._get_description(view.schema_name, view.name)
+            reads, writes, executes = get_postgresql_dependencies(
+                self.connection, view.schema_name, view.name, "view", view.definition
+            )
+            apply_dependencies(view, reads, writes, executes)
 
         return views
 
@@ -438,6 +443,10 @@ class ProcedureExtractor(BaseExtractor):
             proc.parameters = self._get_parameters(proc.schema_name, proc.name)
             proc.definition = self._get_definition(proc.schema_name, proc.name)
             proc.description = self._get_description(proc.schema_name, proc.name)
+            reads, writes, executes = get_postgresql_dependencies(
+                self.connection, proc.schema_name, proc.name, "procedure", proc.definition
+            )
+            apply_dependencies(proc, reads, writes, executes)
 
         return procedures
 
@@ -531,6 +540,10 @@ class FunctionExtractor(BaseExtractor):
             func.description = self._get_description(func.schema_name, func.name)
             if func.function_type == "TABLE":
                 func.return_columns = self._get_return_columns(func.schema_name, func.name)
+            reads, writes, executes = get_postgresql_dependencies(
+                self.connection, func.schema_name, func.name, "function", func.definition
+            )
+            apply_dependencies(func, reads, writes, executes)
 
         return functions
 

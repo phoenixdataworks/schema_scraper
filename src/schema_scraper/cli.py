@@ -10,6 +10,7 @@ import click
 from . import SUPPORTED_BACKENDS, __version__
 from .backends import get_backend
 from .base.models import Database
+from .dependencies import build_reverse_dependencies
 from .config import ScraperConfig
 from .exceptions import (
     BackendNotAvailableError,
@@ -196,6 +197,8 @@ def scrape(
                                 all_triggers.extend(table.triggers)
                             db.triggers = all_triggers
                             click.echo(f"  Found {len(all_triggers)} triggers")
+
+        build_reverse_dependencies(db)
 
         # Generate markdown
         click.echo("Generating markdown documentation...")

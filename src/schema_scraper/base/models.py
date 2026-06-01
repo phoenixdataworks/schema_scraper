@@ -188,6 +188,21 @@ class RoleMembership:
 
 
 @dataclass
+class ObjectReference:
+    """Reference from one database object to another."""
+
+    schema_name: str
+    object_name: str
+    object_type: str  # table, view, procedure, function, synonym, unknown
+    access: str = "read"  # read, write, execute, unknown
+    source: str = "catalog"  # catalog, inferred
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.schema_name}.{self.object_name}"
+
+
+@dataclass
 class Table:
     """Represents a database table."""
 
@@ -206,6 +221,7 @@ class Table:
     total_space_kb: int = 0
     used_space_kb: int = 0
     referenced_by: list[tuple[str, str, str]] = field(default_factory=list)
+    used_by: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -223,6 +239,9 @@ class View:
     description: Optional[str] = None
     is_materialized: bool = False
     base_tables: list[str] = field(default_factory=list)
+    reads_from: "list[ObjectReference]" = field(default_factory=list)
+    writes_to: "list[ObjectReference]" = field(default_factory=list)
+    used_by: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -273,6 +292,10 @@ class Procedure:
     definition: Optional[str] = None
     description: Optional[str] = None
     language: str = "SQL"
+    reads_from: "list[ObjectReference]" = field(default_factory=list)
+    writes_to: "list[ObjectReference]" = field(default_factory=list)
+    executes: "list[ObjectReference]" = field(default_factory=list)
+    used_by: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -324,6 +347,10 @@ class Function:
     definition: Optional[str] = None
     description: Optional[str] = None
     language: str = "SQL"
+    reads_from: "list[ObjectReference]" = field(default_factory=list)
+    writes_to: "list[ObjectReference]" = field(default_factory=list)
+    executes: "list[ObjectReference]" = field(default_factory=list)
+    used_by: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
