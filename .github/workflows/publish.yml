@@ -49,4 +49,4 @@ jobs:
         env:
           TWINE_USERNAME: ${{ secrets.TWINE_USERNAME }}
           TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
-        run: twine upload dist/*
+        run: twine upload --verbose --skip-existing dist/*

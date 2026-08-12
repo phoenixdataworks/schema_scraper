@@ -7,7 +7,7 @@ name = "schema-scraper"
 version = "0.3.0"
 description = "A CLI tool that extracts database schema metadata and generates markdown documentation"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "phxdataworks"}
@@ -33,7 +33,6 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Database Administrators",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
