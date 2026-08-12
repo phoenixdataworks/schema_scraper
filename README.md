@@ -241,43 +241,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 7. Push to the branch (`git push origin feature/amazing-feature`)
 8. Open a Pull Request
 
-## Publishing to PyPI
-
-Releases are published automatically when a version tag is pushed to GitHub.
-
-### One-time GitHub setup
-
-Add these repository secrets under **Settings → Secrets and variables → Actions**:
-
-| Secret | Value |
-|--------|-------|
-| `TWINE_USERNAME` | `__token__` |
-| `TWINE_PASSWORD` | Your PyPI API token (starts with `pypi-`) |
-
-Create the token at [pypi.org/manage/account/token](https://pypi.org/manage/account/token/).
-
-### Release process
-
-1. Bump `version` in `pyproject.toml` and `src/schema_scraper/__init__.py`
-2. Update `CHANGELOG.md`
-3. Commit and push to `master`
-4. Create and push a matching tag:
-
-```bash
-git tag v0.3.0
-git push origin v0.3.0
-```
-
-The **Publish to PyPI** workflow validates that the tag (without the `v` prefix) matches `pyproject.toml`, builds the package, and uploads it with Twine.
-
-For a manual release outside CI:
-
-```bash
-python -m build
-twine check dist/*
-twine upload dist/*
-```
-
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for a list of changes.
