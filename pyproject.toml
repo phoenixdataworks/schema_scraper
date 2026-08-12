@@ -77,11 +77,11 @@ dev = [
 schema-scraper = "schema_scraper.cli:cli"
 
 [project.urls]
-Homepage = "https://github.com/phxdataworks/schema_scraper"
-Repository = "https://github.com/phxdataworks/schema_scraper"
-Documentation = "https://github.com/phxdataworks/schema_scraper#readme"
-Changelog = "https://github.com/phxdataworks/schema_scraper/blob/master/CHANGELOG.md"
-Issues = "https://github.com/phxdataworks/schema_scraper/issues"
+Homepage = "https://github.com/phoenixdataworks/schema_scraper"
+Repository = "https://github.com/phoenixdataworks/schema_scraper"
+Documentation = "https://github.com/phoenixdataworks/schema_scraper#readme"
+Changelog = "https://github.com/phoenixdataworks/schema_scraper/blob/master/CHANGELOG.md"
+Issues = "https://github.com/phoenixdataworks/schema_scraper/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -8,7 +8,7 @@ import click
 from . import __version__
 
 COMPANY_NAME = "Phoenix DataWorks"
-COMPANY_URL = "https://github.com/phxdataworks"
+COMPANY_URL = "https://github.com/phoenixdataworks"
 NO_BANNER_ENV_VAR = "SCHEMA_SCRAPER_NO_BANNER"
 
 

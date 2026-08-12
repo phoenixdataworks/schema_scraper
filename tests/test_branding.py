@@ -45,7 +45,7 @@ class TestBrandingContent:
     def test_format_footer_includes_company_link(self):
         footer = format_footer("1.2.3")
         assert "schema-scraper v1.2.3" in footer
-        assert "[Phoenix DataWorks](https://github.com/phxdataworks)" in footer
+        assert "[Phoenix DataWorks](https://github.com/phoenixdataworks)" in footer
 
     def test_append_footer_adds_attribution(self):
         content = append_footer("# Title\n\nBody", quiet=False, version="1.0.0")
