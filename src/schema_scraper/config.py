@@ -62,6 +62,7 @@ class ScraperConfig:
     # Behavior
     dry_run: bool = False
     verbosity: int = 0
+    quiet: bool = False
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""

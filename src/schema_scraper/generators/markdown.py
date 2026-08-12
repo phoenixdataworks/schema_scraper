@@ -16,6 +16,7 @@ from ..base.models import (
     UserDefinedType,
     View,
 )
+from ..branding import append_footer
 from ..config import ScraperConfig
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class MarkdownGenerator:
 
     def _write_file(self, path: Path, content: str) -> Path:
         """Write content to a file."""
+        content = append_footer(content, quiet=self.config.quiet)
         if self.config.dry_run:
             logger.info(f"[DRY RUN] Would write: {path}")
         else:

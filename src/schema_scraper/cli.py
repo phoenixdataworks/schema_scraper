@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from . import SUPPORTED_BACKENDS, __version__
+from .branding import COMPANY_NAME, COMPANY_URL, maybe_echo_banner
 from .backends import get_backend
 from .base.models import Database
 from .config import ScraperConfig
@@ -37,7 +38,10 @@ def setup_logging(verbosity: int) -> None:
 
 
 @click.group()
-@click.version_option(version=__version__)
+@click.version_option(
+    version=__version__,
+    message=f"%(prog)s %(version)s\n{COMPANY_NAME} · {COMPANY_URL}",
+)
 def cli():
     """Schema Scraper - Extract database schema to markdown documentation.
 
@@ -75,6 +79,7 @@ def cli():
                               case_sensitive=False),
               help="Object types to extract (default: all)")
 @click.option("-v", "--verbose", count=True, help="Increase verbosity (-v info, -vv debug)")
+@click.option("-q", "--quiet", is_flag=True, help="Suppress branding banner and doc footers")
 @click.option("--dry-run", is_flag=True, help="Preview without writing files")
 def scrape(
     db_type: str,
@@ -97,11 +102,13 @@ def scrape(
     exclude_schemas: tuple[str, ...],
     object_types: tuple[str, ...],
     verbose: int,
+    quiet: bool,
     dry_run: bool,
 ) -> None:
     """Extract database schema and generate markdown documentation."""
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
+    maybe_echo_banner(quiet=quiet)
 
     try:
         # Snowflake env var fallbacks
@@ -149,6 +156,7 @@ def scrape(
             ],
             dry_run=dry_run,
             verbosity=verbose,
+            quiet=quiet,
         )
 
         config.validate()
