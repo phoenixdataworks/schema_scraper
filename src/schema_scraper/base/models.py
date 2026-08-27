@@ -187,6 +187,42 @@ class RoleMembership:
     member_type: str = "USER"  # USER or ROLE
 
 
+@dataclass(frozen=True, order=True)
+class ObjectRef:
+    """A reference to a schema object (table, view, procedure, function, ...)."""
+
+    schema_name: str
+    name: str
+    object_type: str = "unknown"
+
+    @property
+    def full_name(self) -> str:
+        if self.schema_name:
+            return f"{self.schema_name}.{self.name}"
+        return self.name
+
+
+@dataclass(frozen=True)
+class Relationship:
+    """A directed dependency from one schema object to another."""
+
+    from_schema: str
+    from_name: str
+    from_type: str
+    to_schema: str
+    to_name: str
+    to_type: str
+    kind: str = "reads_from"
+
+    @property
+    def source(self) -> ObjectRef:
+        return ObjectRef(self.from_schema, self.from_name, self.from_type)
+
+    @property
+    def target(self) -> ObjectRef:
+        return ObjectRef(self.to_schema, self.to_name, self.to_type)
+
+
 @dataclass
 class Table:
     """Represents a database table."""
@@ -206,6 +242,8 @@ class Table:
     total_space_kb: int = 0
     used_space_kb: int = 0
     referenced_by: list[tuple[str, str, str]] = field(default_factory=list)
+    reads_from: "list[ObjectRef]" = field(default_factory=list)
+    used_by: "list[ObjectRef]" = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -223,6 +261,8 @@ class View:
     description: Optional[str] = None
     is_materialized: bool = False
     base_tables: list[str] = field(default_factory=list)
+    reads_from: "list[ObjectRef]" = field(default_factory=list)
+    used_by: "list[ObjectRef]" = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -273,6 +313,8 @@ class Procedure:
     definition: Optional[str] = None
     description: Optional[str] = None
     language: str = "SQL"
+    reads_from: "list[ObjectRef]" = field(default_factory=list)
+    used_by: "list[ObjectRef]" = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -324,6 +366,8 @@ class Function:
     definition: Optional[str] = None
     description: Optional[str] = None
     language: str = "SQL"
+    reads_from: "list[ObjectRef]" = field(default_factory=list)
+    used_by: "list[ObjectRef]" = field(default_factory=list)
 
     @property
     def full_name(self) -> str:

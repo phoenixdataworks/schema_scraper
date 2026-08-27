@@ -7,6 +7,7 @@ from pathlib import Path
 from ..base.models import (
     Database,
     Function,
+    ObjectRef,
     Procedure,
     Schema,
     Sequence,
@@ -18,6 +19,7 @@ from ..base.models import (
 )
 from ..branding import append_footer
 from ..config import ScraperConfig
+from ..dependencies import catalog_index, object_doc_dir
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +30,13 @@ class MarkdownGenerator:
     def __init__(self, config: ScraperConfig):
         self.config = config
         self.output_dir = config.output_dir
+        self._known_objects: dict[tuple[str, str], ObjectRef] = {}
 
     def generate(self, database: Database) -> list[Path]:
         """Generate all markdown files for the database."""
         created_files: list[Path] = []
 
+        self._known_objects = catalog_index(database)
         self._create_directories()
         created_files.append(self._generate_database_readme(database))
 
@@ -82,6 +86,35 @@ class MarkdownGenerator:
             path.write_text(content, encoding="utf-8")
             logger.debug(f"Wrote: {path}")
         return path
+
+    def _object_link(self, ref: ObjectRef) -> str:
+        """Link to a documented object, or fall back to a code span."""
+        key = ((ref.schema_name or "").lower(), (ref.name or "").lower())
+        known = self._known_objects.get(key)
+        dest_dir = object_doc_dir(known.object_type if known else ref.object_type)
+        if dest_dir:
+            return f"[{ref.full_name}](../{dest_dir}/{ref.schema_name}.{ref.name}.md)"
+        return f"`{ref.full_name}`"
+
+    def _append_inputs_section(self, lines: list[str], obj: object) -> None:
+        """Emit ## Inputs / ### Reads From when the object has dependencies."""
+        reads_from = getattr(obj, "reads_from", None) or []
+        if not reads_from:
+            return
+        lines.extend(["## Inputs", "", "### Reads From", ""])
+        for ref in reads_from:
+            lines.append(f"- {self._object_link(ref)}")
+        lines.append("")
+
+    def _append_referenced_by_section(self, lines: list[str], obj: object) -> None:
+        """Emit ### Referenced By for non-table objects that are used elsewhere."""
+        used_by = getattr(obj, "used_by", None) or []
+        if not used_by:
+            return
+        lines.extend(["## Relationships", "", "### Referenced By", ""])
+        for ref in used_by:
+            lines.append(f"- ← {self._object_link(ref)} ({ref.object_type})")
+        lines.append("")
 
     def _generate_database_readme(self, database: Database) -> Path:
         """Generate the main README with database overview."""
@@ -248,20 +281,31 @@ class MarkdownGenerator:
             for cc in table.check_constraints:
                 lines.extend([f"### {cc.name}", "", "```sql", cc.definition, "```", ""])
 
-        if table.foreign_keys or table.referenced_by:
+        if table.foreign_keys or table.referenced_by or table.used_by:
             lines.extend(["## Relationships", ""])
             if table.foreign_keys:
                 lines.append("### References (this table → other tables)")
                 lines.append("")
                 for fk in table.foreign_keys:
-                    lines.append(f"- → [{fk.referenced_schema}.{fk.referenced_table}](../{fk.referenced_schema}.{fk.referenced_table}.md) via `{fk.name}`")
+                    ref = ObjectRef(fk.referenced_schema, fk.referenced_table, "table")
+                    lines.append(f"- → {self._object_link(ref)} via `{fk.name}`")
                 lines.append("")
-            if table.referenced_by:
-                lines.append("### Referenced By (other tables → this table)")
+            if table.referenced_by or table.used_by:
+                lines.append("### Referenced By")
                 lines.append("")
+                seen: set[tuple[str, str]] = set()
                 for ref_schema, ref_table, fk_name in table.referenced_by:
-                    lines.append(f"- ← [{ref_schema}.{ref_table}](../{ref_schema}.{ref_table}.md) via `{fk_name}`")
+                    seen.add((ref_schema.lower(), ref_table.lower()))
+                    ref = ObjectRef(ref_schema, ref_table, "table")
+                    lines.append(f"- ← {self._object_link(ref)} via `{fk_name}`")
+                for ref in table.used_by:
+                    key = (ref.schema_name.lower(), ref.name.lower())
+                    if key in seen:
+                        continue
+                    lines.append(f"- ← {self._object_link(ref)} ({ref.object_type})")
                 lines.append("")
+
+        self._append_inputs_section(lines, table)
 
         return self._write_file(
             self.output_dir / "tables" / f"{table.schema_name}.{table.name}.md",
@@ -316,11 +360,15 @@ class MarkdownGenerator:
             lines.append(f"| {col.name} | {col.full_type} | {nullable} | {desc} |")
         lines.append("")
 
-        if view.base_tables:
+        if view.reads_from:
+            self._append_inputs_section(lines, view)
+        elif view.base_tables:
             lines.extend(["## Base Tables", ""])
             for bt in view.base_tables:
                 lines.append(f"- {bt}")
             lines.append("")
+
+        self._append_referenced_by_section(lines, view)
 
         if view.definition:
             lines.extend(["## Definition", "", "```sql", view.definition, "```", ""])
@@ -377,6 +425,9 @@ class MarkdownGenerator:
             lines.append("")
         else:
             lines.extend(["*No parameters*", ""])
+
+        self._append_inputs_section(lines, proc)
+        self._append_referenced_by_section(lines, proc)
 
         if proc.definition:
             lines.extend(["## Definition", "", "```sql", proc.definition, "```", ""])
@@ -452,6 +503,9 @@ class MarkdownGenerator:
                 nullable = "YES" if col.is_nullable else "NO"
                 lines.append(f"| {col.name} | {col.full_type} | {nullable} |")
             lines.append("")
+
+        self._append_inputs_section(lines, func)
+        self._append_referenced_by_section(lines, func)
 
         if func.definition:
             lines.extend(["## Definition", "", "```sql", func.definition, "```", ""])

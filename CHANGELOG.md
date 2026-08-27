@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.1/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-08-27
+
+### Added
+- **Object dependency graph**: resolve `reads_from` / `used_by` relationships across tables, views, procedures, and functions
+- **Catalog extractors**: SQL expression dependencies from SQL Server (`sys.sql_expression_dependencies`), PostgreSQL (`view_table_usage` / `routine_table_usage`), Oracle (`ALL_DEPENDENCIES`), and MySQL (`VIEW_TABLE_USAGE`)
+- **Definition scan fallback**: when a catalog view is missing (SQLite, older engines), scan object SQL against the known catalog
+- **Markdown Inputs**: `## Inputs` / `### Reads From` on tables, views, procedures, and functions
+- **Markdown Referenced By**: inbound consumers (views, procedures, functions) in addition to foreign-key `referenced_by` on tables
+
 ## [0.3.1] - 2026-08-12
 
 ### Changed

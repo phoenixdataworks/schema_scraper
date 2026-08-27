@@ -172,24 +172,30 @@ schema_docs/{database_name}/
 - All indexes (type, columns, included columns, filters)
 - Check constraints with full definitions
 - Row count and space usage statistics
-- Relationship graph (what references this table, what it references)
+- Relationship graph (foreign keys this table references, and tables that reference it)
+- Inputs / Reads From (views, procedures, and functions that this table depends on, when present)
+- Referenced By consumers (views, procedures, and functions that read this table)
 
 ### Views
 - Column list with data types
 - Full SQL definition
-- Base tables referenced
+- Inputs / Reads From (base tables and other objects the view depends on)
+- Referenced By (objects that read this view)
 - Materialized view indicator (PostgreSQL)
 
 ### Stored Procedures
 - All parameters with types, direction (IN/OUT), defaults
 - Full SQL definition
 - Language (T-SQL, PL/SQL, PL/pgSQL, etc.)
+- Inputs / Reads From (tables, views, and routines the procedure uses)
+- Referenced By (objects that call this procedure)
 
 ### Functions
 - Function type (scalar, table-valued, aggregate, window)
 - Parameters with types and defaults
 - Return type (scalar) or return columns (table-valued)
 - Full SQL definition
+- Inputs / Reads From and Referenced By dependency sections
 
 ### Triggers
 - Trigger type (BEFORE/AFTER/INSTEAD OF)

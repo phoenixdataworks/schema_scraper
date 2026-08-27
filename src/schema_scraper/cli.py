@@ -18,6 +18,7 @@ from .exceptions import (
     ConnectionError,
     SchemaScraperError,
 )
+from .dependencies import attach_object_dependencies
 from .generators import MarkdownGenerator
 
 
@@ -204,6 +205,10 @@ def scrape(
                                 all_triggers.extend(table.triggers)
                             db.triggers = all_triggers
                             click.echo(f"  Found {len(all_triggers)} triggers")
+
+            click.echo("Resolving object dependencies...")
+            relationships = attach_object_dependencies(conn, db, config)
+            click.echo(f"  Found {len(relationships)} dependency edges")
 
         # Generate markdown
         click.echo("Generating markdown documentation...")
