@@ -4,10 +4,12 @@ import pytest
 from schema_scraper.base.models import (
     Column,
     FunctionColumn,
+    ObjectRef,
     Parameter,
     Partition,
     PartitionScheme,
     Permission,
+    Relationship,
     Role,
     RoleMembership,
     TablePartitioning,
@@ -252,3 +254,26 @@ class TestRoleMembership:
         assert membership.member_name == "testuser"
         assert membership.role_name == "db_reader"
         assert membership.member_type == "USER"
+
+
+class TestObjectRef:
+    """Tests for ObjectRef model."""
+
+    def test_full_name(self):
+        ref = ObjectRef(schema_name="sales", name="orders", object_type="table")
+        assert ref.full_name == "sales.orders"
+
+    def test_ordering(self):
+        left = ObjectRef("a", "customers", "table")
+        right = ObjectRef("b", "orders", "table")
+        assert left < right
+
+
+class TestRelationship:
+    """Tests for Relationship model."""
+
+    def test_kind_defaults_to_reads_from(self):
+        rel = Relationship("a", "v", "view", "a", "t", "table")
+        assert rel.kind == "reads_from"
+        assert rel.source.name == "v"
+        assert rel.target.name == "t"
