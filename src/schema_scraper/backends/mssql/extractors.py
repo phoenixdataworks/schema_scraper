@@ -35,6 +35,31 @@ from ...base.models import (
 logger = logging.getLogger(__name__)
 
 
+def summarize_allocation_unit_stats(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Count each partition's rows once and sum pages across its allocation units.
+
+    ``sys.partitions.rows`` is repeated for every allocation unit of a partition
+    (in-row, row-overflow, and LOB). Summing it after that join counts each row
+    once per unit.
+    """
+    rows_by_partition: dict[Any, int] = {}
+    total_pages = 0
+    used_pages = 0
+    for row in rows:
+        partition_id = row["partition_id"]
+        row_count = int(row["row_count"] or 0)
+        recorded = rows_by_partition.get(partition_id)
+        if recorded is None or row_count > recorded:
+            rows_by_partition[partition_id] = row_count
+        total_pages += int(row["total_pages"] or 0)
+        used_pages += int(row["used_pages"] or 0)
+    return {
+        "row_count": sum(rows_by_partition.values()),
+        "total_space_kb": total_pages * 8,
+        "used_space_kb": used_pages * 8,
+    }
+
+
 class MSSQLBaseExtractor(BaseExtractor):
     """Base extractor with MSSQL-specific helpers."""
 
@@ -478,28 +503,27 @@ class TableExtractor(MSSQLBaseExtractor):
         return triggers
 
     def _get_table_stats(self, schema_name: str, table_name: str) -> dict[str, Any]:
-        """Get row count and space statistics for a table."""
+        """Get row count and space statistics for a table.
+
+        Returns one row per allocation unit. Row counts are partition-level, so
+        ``summarize_allocation_unit_stats`` counts each partition once while
+        still adding pages from the in-row, row-overflow, and LOB units.
+        """
         query = """
             SELECT
-                SUM(p.rows) AS row_count,
-                SUM(a.total_pages) * 8 AS total_space_kb,
-                SUM(a.used_pages) * 8 AS used_space_kb
+                p.partition_id,
+                p.rows AS row_count,
+                a.total_pages,
+                a.used_pages
             FROM sys.tables t
             JOIN sys.schemas s ON t.schema_id = s.schema_id
             JOIN sys.indexes i ON t.object_id = i.object_id
             JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
             JOIN sys.allocation_units a ON p.partition_id = a.container_id
             WHERE s.name = ? AND t.name = ? AND i.index_id IN (0, 1)
-            GROUP BY t.object_id
         """
         rows = self.connection.execute_dict(query, (schema_name, table_name))
-        if rows:
-            return {
-                "row_count": rows[0]["row_count"] or 0,
-                "total_space_kb": rows[0]["total_space_kb"] or 0,
-                "used_space_kb": rows[0]["used_space_kb"] or 0,
-            }
-        return {"row_count": 0, "total_space_kb": 0, "used_space_kb": 0}
+        return summarize_allocation_unit_stats(rows)
 
     def _build_references(self, tables: list[Table]) -> None:
         """Build the referenced_by list for each table."""

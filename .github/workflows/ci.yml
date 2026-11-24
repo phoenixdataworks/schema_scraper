@@ -25,13 +25,23 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip "setuptools>=83.0" wheel
-          python -m pip install -e ".[all,dev]"
+          # pip-audit is installed in a separate venv below. Installing it here
+          # pulls filelock into the environment being audited.
+          python -m pip install -e ".[all]" "pytest>=8.0.0" "pytest-cov>=5.0.0" "build>=1.2.0" "twine>=5.0.0"
 
       - name: Run tests
         run: pytest
 
       - name: Security audit
-        run: pip-audit
+        run: |
+          python -m venv "$RUNNER_TEMP/pip-audit-venv"
+          "$RUNNER_TEMP/pip-audit-venv/bin/pip" install --upgrade pip "pip-audit>=2.7.0"
+          mapfile -t sites < <(python -c 'import site; print("\n".join(site.getsitepackages()))')
+          args=()
+          for site_path in "${sites[@]}"; do
+            args+=(--path "$site_path")
+          done
+          "$RUNNER_TEMP/pip-audit-venv/bin/pip-audit" --progress-spinner off "${args[@]}"
 
       - name: Build package
         run: |
