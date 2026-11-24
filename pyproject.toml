@@ -54,13 +54,18 @@ mssql = ["pyodbc>=5.2.0"]
 postgresql = ["psycopg[binary]>=3.2.0"]
 mysql = ["mysql-connector-python>=9.1.0"]
 oracle = ["oracledb>=2.5.0"]
-snowflake = ["snowflake-connector-python>=3.12.0", "cryptography>=43.0.0"]
+# Connector 4.8.0 is the last release that installs on Python 3.10, and it pins
+# filelock<4. The filelock fixes require Python >= 3.11, so 3.10 cannot take them.
+snowflake = [
+    "snowflake-connector-python>=3.12.0; python_version >= '3.11'",
+    "cryptography>=43.0.0",
+]
 all = [
     "pyodbc>=5.2.0",
     "psycopg[binary]>=3.2.0",
     "mysql-connector-python>=9.1.0",
     "oracledb>=2.5.0",
-    "snowflake-connector-python>=3.12.0",
+    "snowflake-connector-python>=3.12.0; python_version >= '3.11'",
     "cryptography>=43.0.0",
 ]
 dev = [
